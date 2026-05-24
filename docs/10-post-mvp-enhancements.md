@@ -58,7 +58,7 @@ A running log of features explicitly deferred from MVP scope. Items here are ack
 **Implementation notes:**
 - Would require a new agent or subsystem: a Combat Resolver that tracks HP, conditions, initiative, and action economy
 - The narrator would need to understand combat state (who is down, what conditions are active) — a new `combat_state.json` file and narrator card updates
-- D&D 5e rules are the natural target ruleset; consider whether to implement them faithfully or use a simplified abstraction
+- 5e RPG rules are the natural target ruleset; consider whether to implement them faithfully or use a simplified abstraction
 - Integration point: the orchestrator's turn loop would need a "combat mode" branch where the combat resolver runs instead of (or before) the regular resolver
 - Battle maps / grid visualization would be a further enhancement on top of this
 
@@ -103,7 +103,7 @@ A running log of features explicitly deferred from MVP scope. Items here are ack
 
 **What it is:** Full structured stat blocks for player characters and a lighter variant for NPCs — covering core attributes (Strength, Dexterity, Constitution, Intelligence, Wisdom, Charisma), derived values (HP, AC, saving throws, skill modifiers), equipment, and for players, class-specific fields like spell slots. The exact schema for both is undecided and deferred; this entry maps where the current design will need to change when sheets arrive.
 
-**Why deferred:** The scope of D&D 5e character mechanics is large, and the right level of fidelity (full 5e vs. a narrative-plus abstraction) hasn't been decided. Building the probabilistic engine and battle engine first will clarify exactly which stat fields are actually needed, making the schema decision easier to get right.
+**Why deferred:** The scope of 5e RPG character mechanics is large, and the right level of fidelity (full 5e vs. a narrative-plus abstraction) hasn't been decided. Building the probabilistic engine and battle engine first will clarify exactly which stat fields are actually needed, making the schema decision easier to get right.
 
 **Impact on current design — files that will change:**
 
@@ -137,7 +137,7 @@ The engine receives a base probability (0–100, supplied by the caller based on
 probabilityEngine.roll({
   base_probability: 60,       // caller's narrative assessment
   stat_modifier: +3,          // from player_state.json sheet field
-  difficulty_class: 15,       // optional, for D&D-style DC checks
+  difficulty_class: 15,       // optional, for 5e RPG-style DC checks
   context: "aria_lockpick_attempt"
 })
 → { success: true, roll: 14, modified_roll: 17, dc: 15, context: "..." }

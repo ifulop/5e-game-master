@@ -1,8 +1,8 @@
-# D&D Dungeon Master Agent — Project Specification
+# 5e RPG Dungeon Master Agent — Project Specification
 
 ## Purpose
 
-This project implements an AI-powered Dungeon Master agent for D&D campaigns. The system generates and manages a hidden story arc, reveals content encounter-by-encounter, and responds dynamically to player choices — all while keeping secret plot information strictly separated from what players see.
+This project implements an AI-powered Dungeon Master agent for 5e RPG campaigns. The system generates and manages a hidden story arc, reveals content encounter-by-encounter, and responds dynamically to player choices — all while keeping secret plot information strictly separated from what players see.
 
 ## Documentation Index
 

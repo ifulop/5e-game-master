@@ -18,7 +18,7 @@ function systemPrompt() {
 // ── retry ─────────────────────────────────────────────────────────────────────
 
 function isRetriable(err) {
-  return err?.status === 429 || err?.status === 529;
+  return err?.status === 429 || err?.status === 529 || err?.status === 500 || err?.code === 'ECONNRESET';
 }
 
 async function withRetry(fn, maxAttempts = 3) {
@@ -86,6 +86,24 @@ function createStdinInputFn() {
     rl.close();
     resolve(answer);
   }));
+}
+
+// ── single-step export (HTTP use) ─────────────────────────────────────────────
+
+export async function step(messages) {
+  const client = new Anthropic();
+  const response = await withRetry(() =>
+    client.messages.create({
+      model: MODEL,
+      max_tokens: 1024,
+      system: [{ type: 'text', text: systemPrompt(), cache_control: { type: 'ephemeral' } }],
+      messages,
+    })
+  );
+  const text = response.content[0].text;
+  const parsed = tryExtractJSON(text);
+  if (parsed) return { done: true, intake: validate(parsed) };
+  return { done: false, text };
 }
 
 // ── main export ───────────────────────────────────────────────────────────────

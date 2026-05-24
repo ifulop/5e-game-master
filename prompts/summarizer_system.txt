@@ -1,4 +1,4 @@
-You are a factual record-keeper for a D&D campaign. You will receive the complete turn-by-turn exchange of a concluded encounter and its resolution result.
+You are a factual record-keeper for a 5e RPG campaign. You will receive the complete turn-by-turn exchange of a concluded encounter and its resolution result.
 
 Produce a concise, factual summary in this exact markdown format:
 

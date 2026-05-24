@@ -19,7 +19,7 @@ function systemText() {
 // ── retry ─────────────────────────────────────────────────────────────────────
 
 function isRetriable(err) {
-  return err?.status === 429 || err?.status === 529;
+  return err?.status === 429 || err?.status === 529 || err?.status === 500 || err?.code === 'ECONNRESET';
 }
 
 async function withRetry(fn, maxAttempts = 3) {
@@ -67,24 +67,22 @@ function formatTurnHistory(inputs) {
   return inputs.map((inp, i) => `Turn ${i + 1}: ${inp}`).join('\n');
 }
 
-function loadEncounterContext(dir, session, campaign) {
+function loadEncounterContext(dir, session) {
   const encId = session.current_encounter_id;
-  const encIndex = session.current_encounter_index;
-  const currentEnc = campaign.encounters[encIndex];
+  const npcIds = session.current_encounter_npcs ?? [];
+  const locationId = session.current_encounter_location_id ?? null;
+  const prevEncId = session.prev_encounter_id ?? null;
 
   const encBrief = safeReadFile(`${dir}/encounters/${encId}.md`) ?? '';
-  const npcCards = loadNPCCards(dir, currentEnc.npcs);
-  const locationCard = currentEnc.location_id
-    ? safeReadFile(`${dir}/locations/${currentEnc.location_id}/${currentEnc.location_id}_narrator.md`) ?? ''
+  const npcCards = loadNPCCards(dir, npcIds);
+  const locationCard = locationId
+    ? safeReadFile(`${dir}/locations/${locationId}/${locationId}_narrator.md`) ?? ''
+    : '';
+  const prevSummary = prevEncId
+    ? safeReadFile(`${dir}/encounters/${prevEncId}_summary.md`) ?? ''
     : '';
 
-  let prevSummary = '';
-  if (encIndex > 0) {
-    const prevEncId = campaign.encounters[encIndex - 1].id;
-    prevSummary = safeReadFile(`${dir}/encounters/${prevEncId}_summary.md`) ?? '';
-  }
-
-  return { encBrief, npcCards, locationCard, prevSummary, currentEnc };
+  return { encBrief, npcCards, locationCard, prevSummary };
 }
 
 // ── system message builder ────────────────────────────────────────────────────
@@ -126,12 +124,11 @@ async function callNarrator(system, userMessage, maxTokens = 1024) {
 export async function openScene() {
   const dir = campaignDir();
   const session = readJSON(`${dir}/session.json`);
-  const campaign = readJSON(`${dir}/campaign.json`);
 
   const worldPrimer = safeReadFile(`${dir}/world_primer.md`) ?? '';
   const playerIds = getPlayerIds(dir);
   const playerCards = loadPlayerCards(dir, playerIds);
-  const { encBrief, npcCards, locationCard, prevSummary } = loadEncounterContext(dir, session, campaign);
+  const { encBrief, npcCards, locationCard, prevSummary } = loadEncounterContext(dir, session);
 
   const parts = [
     npcCards && `## NPC Cards\n\n${npcCards}`,
@@ -149,12 +146,11 @@ export async function openScene() {
 export async function continueTurn(playerInput) {
   const dir = campaignDir();
   const session = readJSON(`${dir}/session.json`);
-  const campaign = readJSON(`${dir}/campaign.json`);
 
   const worldPrimer = safeReadFile(`${dir}/world_primer.md`) ?? '';
   const playerIds = getPlayerIds(dir);
   const playerCards = loadPlayerCards(dir, playerIds);
-  const { encBrief, npcCards, locationCard, prevSummary } = loadEncounterContext(dir, session, campaign);
+  const { encBrief, npcCards, locationCard, prevSummary } = loadEncounterContext(dir, session);
 
   // exclude the current input from history — it becomes the user message
   const prevInputs = session.player_inputs.slice(0, -1);
@@ -177,12 +173,11 @@ export async function continueTurn(playerInput) {
 export async function closeEncounter(resolverResult) {
   const dir = campaignDir();
   const session = readJSON(`${dir}/session.json`);
-  const campaign = readJSON(`${dir}/campaign.json`);
 
   const worldPrimer = safeReadFile(`${dir}/world_primer.md`) ?? '';
   const playerIds = getPlayerIds(dir);
   const playerCards = loadPlayerCards(dir, playerIds);
-  const { encBrief, npcCards, locationCard } = loadEncounterContext(dir, session, campaign);
+  const { encBrief, npcCards, locationCard } = loadEncounterContext(dir, session);
   const turnHistory = formatTurnHistory(session.player_inputs);
   const resolutionType = resolverResult.resolution_triggered;
 
@@ -201,14 +196,15 @@ export async function closeEncounter(resolverResult) {
 
 export async function closeCampaign() {
   const dir = campaignDir();
-  const campaign = readJSON(`${dir}/campaign.json`);
+  const session = readJSON(`${dir}/session.json`);
+  const encounterIds = session.encounter_ids ?? [];
 
   const worldPrimer = safeReadFile(`${dir}/world_primer.md`) ?? '';
   const playerIds = getPlayerIds(dir);
   const playerCards = loadPlayerCards(dir, playerIds);
 
-  const summaries = campaign.encounters
-    .map(enc => safeReadFile(`${dir}/encounters/${enc.id}_summary.md`))
+  const summaries = encounterIds
+    .map(encId => safeReadFile(`${dir}/encounters/${encId}_summary.md`))
     .filter(Boolean)
     .join('\n\n---\n\n');
 

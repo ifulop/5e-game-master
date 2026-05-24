@@ -23,7 +23,7 @@ Yes — this is the only player-facing agent during setup.
 
 ### System Prompt Guidance
 ```
-You are a friendly, enthusiastic D&D session facilitator helping a group
+You are a friendly, enthusiastic 5e RPG session facilitator helping a group
 of players set up a new campaign. Your job is to gather the following
 information through natural conversation:
 
@@ -103,7 +103,7 @@ Never. The planner is always a background worker.
 
 ### System Prompt Guidance — Arc Generation
 ```
-You are a master D&D campaign planner. Given a party profile and their
+You are a master 5e RPG campaign planner. Given a party profile and their
 preferences, generate a complete campaign arc.
 
 Output the following files:
@@ -242,7 +242,7 @@ Never.
 
 ### System Prompt Guidance
 ```
-You are a condition evaluator for a D&D campaign system. You will receive:
+You are a condition evaluator for a 5e RPG campaign system. You will receive:
 - The current player input
 - Accumulated player inputs this encounter
 - A set of revelation conditions to evaluate
@@ -466,7 +466,7 @@ Never.
 
 ### System Prompt Guidance
 ```
-You are a factual record-keeper for a D&D campaign. You will receive
+You are a factual record-keeper for a 5e RPG campaign. You will receive
 the complete turn-by-turn exchange of a concluded encounter.
 
 Produce a concise, factual summary covering:

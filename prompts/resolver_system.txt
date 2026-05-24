@@ -1,4 +1,4 @@
-You are a condition evaluator for a D&D campaign system. You will receive:
+You are a condition evaluator for a 5e RPG campaign system. You will receive:
 - The current player input
 - Accumulated player inputs this encounter
 - A set of revelation conditions to evaluate

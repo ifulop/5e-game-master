@@ -68,6 +68,10 @@ function getAllCallText(callIndex = 0) {
 const baseSession = {
   current_encounter_id: 'enc_001',
   current_encounter_index: 0,
+  current_encounter_npcs: ['barkeep'],
+  current_encounter_location_id: 'loc_001',
+  prev_encounter_id: null,
+  encounter_ids: ['enc_001'],
   turn_count: 2,
   player_inputs: ['We enter cautiously', 'I look around'],
 };
@@ -140,12 +144,14 @@ describe('openScene', () => {
   });
 
   test('loads previous encounter summary when not first encounter', async () => {
-    writeTmpFile('session.json', { ...baseSession, current_encounter_index: 1, current_encounter_id: 'enc_002' });
-    writeTmpFile('campaign.json', {
-      encounters: [
-        { id: 'enc_001', index: 0, title: 'Enc 1', location_id: 'loc_001', npcs: [] },
-        { id: 'enc_002', index: 1, title: 'Enc 2', location_id: 'loc_001', npcs: [] },
-      ],
+    writeTmpFile('session.json', {
+      ...baseSession,
+      current_encounter_index: 1,
+      current_encounter_id: 'enc_002',
+      current_encounter_npcs: [],
+      current_encounter_location_id: 'loc_001',
+      prev_encounter_id: 'enc_001',
+      encounter_ids: ['enc_001', 'enc_002'],
     });
     writeTmpFile('encounters/enc_001_summary.md', 'Players found the ledger.');
     writeTmpFile('encounters/enc_002.md', '# Enc 002\n\nThe docks.');
@@ -240,12 +246,7 @@ describe('closeCampaign', () => {
   });
 
   test('includes all available encounter summaries', async () => {
-    writeTmpFile('campaign.json', {
-      encounters: [
-        { id: 'enc_001', index: 0, title: 'Enc 1', location_id: 'loc_001', npcs: [] },
-        { id: 'enc_002', index: 1, title: 'Enc 2', location_id: 'loc_001', npcs: [] },
-      ],
-    });
+    writeTmpFile('session.json', { ...baseSession, encounter_ids: ['enc_001', 'enc_002'] });
     writeTmpFile('encounters/enc_002_summary.md', '# Enc 002 Summary\n\nThe party confronted the magistrate.');
     await closeCampaign();
     const text = getCallSystemText();

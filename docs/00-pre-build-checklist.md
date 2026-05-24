@@ -1,6 +1,6 @@
 # Pre-build documentation checklist
 
-D&D DM Agent — assessed against existing project docs.
+5e RPG Agent — assessed against existing project docs.
 
 **Status values:** `Covered` — exists in project docs | `Partial` — partially addressed | `Needed` — gap, create before build | `N/A` — not applicable for this project
 

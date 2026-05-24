@@ -19,7 +19,7 @@ function systemPrompt(name) {
 // ── retry ─────────────────────────────────────────────────────────────────────
 
 function isRetriable(err) {
-  return err?.status === 429 || err?.status === 529;
+  return err?.status === 429 || err?.status === 529 || err?.status === 500 || err?.code === 'ECONNRESET';
 }
 
 async function withRetry(fn, maxAttempts = 3) {

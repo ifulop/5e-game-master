@@ -1,6 +1,6 @@
-# 5e Game Master Agent
+# 5e RPG Game Master Agent
 
-A generative Game Master system for running 5e-compatible RPG campaigns with a strict separation between hidden story logic and player-facing narration.
+A generative Game Master system for running Fifth Edition Rules-compatible RPG campaigns with a strict separation between hidden story logic and player-facing narration.
 
 The project is designed around a simple rule: the system that knows the secrets is not the system that talks to the players. A hidden planning layer manages the story arc, encounter outcomes, revelations, and world state. A separate narration layer only sees information that has already been explicitly released.
 

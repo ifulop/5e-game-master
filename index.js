@@ -10,17 +10,28 @@ import { StateManager } from './stateManager.js';
 const CAMPAIGN_DIR = process.env.CAMPAIGN_DIR ?? 'campaign';
 const stateManager = new StateManager(CAMPAIGN_DIR);
 
-export async function setupCampaign() {
-  const intakeData = await intake.run();
-  writeJSON(`${CAMPAIGN_DIR}/intake.json`, intakeData);
+// providedIntake: used by HTTP flow where intake was already completed via /intake endpoint
+export async function setupCampaign(providedIntake = null) {
+  let intakeData;
+  if (providedIntake) {
+    intakeData = providedIntake;
+  } else {
+    intakeData = await intake.run();
+    writeJSON(`${CAMPAIGN_DIR}/intake.json`, intakeData);
+  }
 
   await planner.generateCampaign(intakeData);
 
   const campaign = readJSON(`${CAMPAIGN_DIR}/campaign.json`);
+  const firstEnc = campaign.encounters[0];
   const session = {
     campaign_id: campaign.meta.campaign_id,
     current_encounter_index: 0,
-    current_encounter_id: campaign.encounters[0].id,
+    current_encounter_id: firstEnc.id,
+    current_encounter_npcs: firstEnc.npcs ?? [],
+    current_encounter_location_id: firstEnc.location_id ?? null,
+    prev_encounter_id: null,
+    encounter_ids: campaign.encounters.map(e => e.id),
     encounter_status: 'awaiting_scene_open',
     turn_count: 0,
     player_inputs: []
@@ -38,25 +49,43 @@ export async function setupCampaign() {
 }
 
 export async function processTurn(playerInput) {
-  // ── Step 1: Update session state ─────────────────────────────────────────
+  // ── Step 1: Load session (no write yet — turn is not consumed until resolver succeeds) ──
   const session = readJSON(`${CAMPAIGN_DIR}/session.json`);
-  session.player_inputs.push(playerInput);
-  session.turn_count++;
-  writeJSON(`${CAMPAIGN_DIR}/session.json`, session);
+
+  // ── Step 1b: Retry pending revelation triggers from a previous failed append ──
+  if (session.pending_revelation_triggers?.length) {
+    try {
+      await planner.applyRevelations(session.pending_revelation_triggers);
+      delete session.pending_revelation_triggers;
+      writeJSON(`${CAMPAIGN_DIR}/session.json`, session);
+    } catch {
+      // Leave triggers for retry next turn; continue with current turn
+    }
+  }
 
   // ── Step 2: Resolver ──────────────────────────────────────────────────────
   const campaign = readJSON(`${CAMPAIGN_DIR}/campaign.json`);
   const currentEncounter = campaign.encounters[session.current_encounter_index];
+
+  // Compute the would-be updated values to pass to the resolver
+  const newInputs = [...session.player_inputs, playerInput];
+  const newTurnCount = session.turn_count + 1;
+
   const result = await resolver.evaluate({
     input: playerInput,
-    accumulated_inputs: session.player_inputs,
+    accumulated_inputs: newInputs,
     revelation_conditions: currentEncounter.revelation_conditions,
     resolution_conditions: currentEncounter.resolution_conditions,
     location_secrets: campaign.location_secrets?.[currentEncounter.location_id] ?? null,
     npc_attitudes: getActiveNPCAttitudes(currentEncounter),
     encounter_id: session.current_encounter_id,
-    turn: session.turn_count,
+    turn: newTurnCount,
   });
+
+  // ── Write session AFTER resolver succeeds (turn is now consumed) ──────────
+  session.player_inputs = newInputs;
+  session.turn_count = newTurnCount;
+  writeJSON(`${CAMPAIGN_DIR}/session.json`, session);
   writeJSON(`${CAMPAIGN_DIR}/resolver_result.json`, result);
 
   // ── Step 3: Object state changes ──────────────────────────────────────────
@@ -66,7 +95,16 @@ export async function processTurn(playerInput) {
 
   // ── Step 4: Revelation append ─────────────────────────────────────────────
   if (result.revelation_triggers.length > 0) {
-    await planner.applyRevelations(result.revelation_triggers);
+    try {
+      await planner.applyRevelations(result.revelation_triggers);
+    } catch {
+      // Narrator will run without the new REVEALED content this turn; retry next turn
+      session.pending_revelation_triggers = [
+        ...(session.pending_revelation_triggers ?? []),
+        ...result.revelation_triggers,
+      ];
+      writeJSON(`${CAMPAIGN_DIR}/session.json`, session);
+    }
   }
 
   // ── Step 5: Narrative update for object state changes ─────────────────────
@@ -96,12 +134,17 @@ export async function handleEncounterTransition(resolverResult) {
   // ── Step 1: Narrator closes current encounter ─────────────────────────────
   const closeNarration = await narrator.closeEncounter(resolverResult);
 
-  // ── Step 2: Summarizer ────────────────────────────────────────────────────
-  const summary = await summarizer.summarize({
-    encounter_exchange: getEncounterExchange(session),
-    resolution: resolverResult
-  });
-  writeFile(`${CAMPAIGN_DIR}/encounters/${session.current_encounter_id}_summary.md`, summary);
+  // ── Step 2: Summarizer — fallback to raw exchange on failure ─────────────
+  let summary;
+  try {
+    summary = await summarizer.summarize({
+      encounter_exchange: getEncounterExchange(session),
+      resolution: resolverResult
+    });
+    writeFile(`${CAMPAIGN_DIR}/encounters/${session.current_encounter_id}_summary.md`, summary);
+  } catch {
+    summary = getEncounterExchange(session);
+  }
 
   // ── Step 3: Planner reconciliation ────────────────────────────────────────
   const updates = await planner.closeEncounter({
@@ -116,7 +159,7 @@ export async function handleEncounterTransition(resolverResult) {
   const nextIndex = session.current_encounter_index + 1;
   if (nextIndex >= campaign.encounters.length) {
     const openNarration = await narrator.closeCampaign();
-    return { closeNarration, openNarration };
+    return { closeNarration, openNarration, resolution_type: resolverResult.resolution_triggered };
   }
 
   // ── Step 6: Planner opens next encounter ──────────────────────────────────
@@ -128,8 +171,12 @@ export async function handleEncounterTransition(resolverResult) {
   });
 
   // ── Step 7: Reset session for new encounter ───────────────────────────────
+  const nextEnc = campaign.encounters[nextIndex];
+  session.prev_encounter_id = session.current_encounter_id;
   session.current_encounter_index = nextIndex;
-  session.current_encounter_id = campaign.encounters[nextIndex].id;
+  session.current_encounter_id = nextEnc.id;
+  session.current_encounter_npcs = nextEnc.npcs ?? [];
+  session.current_encounter_location_id = nextEnc.location_id ?? null;
   session.encounter_status = 'awaiting_scene_open';
   session.turn_count = 0;
   session.player_inputs = [];
@@ -139,7 +186,7 @@ export async function handleEncounterTransition(resolverResult) {
   const openNarration = await narrator.openScene();
   session.encounter_status = 'in_progress';
   writeJSON(`${CAMPAIGN_DIR}/session.json`, session);
-  return { closeNarration, openNarration };
+  return { closeNarration, openNarration, resolution_type: resolverResult.resolution_triggered };
 }
 
 function createPlayerFiles(player) {

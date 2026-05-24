@@ -27,11 +27,12 @@ jest.unstable_mockModule('@anthropic-ai/sdk', () => ({
 
 // ── import intake after mocks ─────────────────────────────────────────────────
 
-let run;
+let run, step;
 
 beforeAll(async () => {
   const mod = await import('../../agents/intake.js');
   run = mod.run;
+  step = mod.step;
 });
 
 beforeEach(() => {
@@ -211,6 +212,32 @@ describe('run — max turns', () => {
     const inputFn = jest.fn().mockResolvedValue('More info.');
     await expect(run(inputFn, { outputFn: noOp, maxTurns: 3 })).rejects.toThrow('max turns');
     expect(mockCreate).toHaveBeenCalledTimes(3);
+  });
+});
+
+// ── step() — single HTTP turn ─────────────────────────────────────────────────
+
+describe('step — single HTTP turn', () => {
+  test('returns { done: true, intake } when LLM produces JSON', async () => {
+    apiResponds(JSON.stringify(validIntake));
+    const result = await step([{ role: 'user', content: 'Start the session.' }]);
+    expect(result).toEqual({ done: true, intake: validIntake });
+  });
+
+  test('returns { done: false, text } when LLM produces conversational response', async () => {
+    apiResponds('Tell me about your characters.');
+    const result = await step([{ role: 'user', content: 'Start the session.' }]);
+    expect(result).toEqual({ done: false, text: 'Tell me about your characters.' });
+  });
+
+  test('retries on 429 and returns result on second attempt', async () => {
+    const rateLimitError = Object.assign(new Error('rate limited'), { status: 429 });
+    mockCreate
+      .mockRejectedValueOnce(rateLimitError)
+      .mockResolvedValueOnce({ content: [{ text: JSON.stringify(validIntake) }] });
+    const result = await step([{ role: 'user', content: 'Start.' }]);
+    expect(result).toEqual({ done: true, intake: validIntake });
+    expect(mockCreate).toHaveBeenCalledTimes(2);
   });
 });
 

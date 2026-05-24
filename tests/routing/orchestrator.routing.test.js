@@ -243,19 +243,19 @@ describe('Session State Updates', () => {
     expect(writtenSession.turn_count).toBe(1);
   });
 
-  test('session.json is written before resolver.evaluate is called', async () => {
+  test('session.json is written after resolver.evaluate succeeds', async () => {
     const order = [];
-    mockWriteJSON.mockImplementation((path) => {
-      if (path.includes('session.json')) order.push('sessionWrite');
-    });
     mockResolver.evaluate.mockImplementation(async () => {
       order.push('resolver');
       return { ...baseResult };
     });
+    mockWriteJSON.mockImplementation((path) => {
+      if (path.includes('session.json')) order.push('sessionWrite');
+    });
 
     await processTurn('test input');
 
-    expect(order.indexOf('sessionWrite')).toBeLessThan(order.indexOf('resolver'));
+    expect(order.indexOf('resolver')).toBeLessThan(order.indexOf('sessionWrite'));
   });
 });
 
