@@ -1,3 +1,5 @@
 node_modules/
 .env
 campaign/
+docs/*.pdf
+tools/

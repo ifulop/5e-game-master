@@ -431,7 +431,7 @@ Player-facing epilogue prose. No structured format or length constraint. Should:
 - Acknowledge the party's key decisions and their consequences
 - For each surviving NPC, invent a humorous, 1-2 sentence outcome that describes what they ended up doing after the campaign.
 - For each player character, invent a humorous, 1-2 sentence outcome that describes what they ended up doing after the campaign (these should remain consistent with their character arcs and behavioral patterns). 
-- Match the tone established in world_primer.md throughout
+- Match the tone established in world_primer.md throughout.
 
 ### NEVER Loaded Into Narrator Context
 - arc_brief.md
