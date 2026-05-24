@@ -1,14 +1,20 @@
+import 'dotenv/config';
 import express from 'express';
 import { existsSync, rmSync, renameSync } from 'fs';
-import { readJSON, writeJSON } from './fileUtils.js';
+import { readJSON, writeJSON, readFile, appendToFile } from './fileUtils.js';
 import * as intake from './agents/intake.js';
 import * as narrator from './agents/narrator.js';
 import { setupCampaign, processTurn } from './index.js';
 
 const app = express();
 app.use(express.json());
+app.use(express.static('public'));
 
 const CAMPAIGN_DIR = process.env.CAMPAIGN_DIR ?? 'campaign';
+
+function logTranscript(text) {
+  appendToFile(`${CAMPAIGN_DIR}/adventure_transcript.md`, text);
+}
 
 // ── Phase detection ───────────────────────────────────────────────────────────
 
@@ -170,11 +176,12 @@ app.post('/turn', async (req, res) => {
       return res.json({ narration: result });
     }
 
-    // Encounter transition: result is { closeNarration, openNarration, resolution_type }
+    // Encounter transition: result is { narration, encounter_resolved, resolution_type, campaign_complete }
     return res.json({
-      narration: result.openNarration,
+      narration: result.narration,
       encounter_resolved: true,
       resolution_type: result.resolution_type,
+      campaign_complete: result.campaign_complete ?? false,
     });
   } catch (err) {
     if (err?.status === 429 || err?.status === 529 || err?.status === 503) {
@@ -193,6 +200,20 @@ app.post('/scene', async (req, res) => {
   }
 
   const session = readJSON(sessionPath);
+
+  if (session.encounter_status === 'complete') {
+    try {
+      const narration = await narrator.closeCampaign();
+      logTranscript(`## Epilogue\n\n${narration}\n`);
+      return res.json({ narration, campaign_complete: true });
+    } catch (err) {
+      if (err?.status === 429 || err?.status === 529 || err?.status === 503) {
+        return res.status(503).json({ error: 'llm_unavailable', message: err.message });
+      }
+      return res.status(500).json({ error: 'narrator_failed', message: err.message });
+    }
+  }
+
   if (session.encounter_status !== 'awaiting_scene_open') {
     return res.status(400).json({
       error: 'wrong_phase',
@@ -204,6 +225,7 @@ app.post('/scene', async (req, res) => {
     const narration = await narrator.openScene();
     session.encounter_status = 'in_progress';
     writeJSON(sessionPath, session);
+    logTranscript(`## New Scene\n\n${narration}\n\n---\n\n`);
     return res.json({ narration });
   } catch (err) {
     if (err?.status === 429 || err?.status === 529 || err?.status === 503) {
@@ -211,6 +233,46 @@ app.post('/scene', async (req, res) => {
     }
     return res.status(500).json({ error: 'narrator_failed', message: err.message });
   }
+});
+
+// ── GET /adventure/summary ────────────────────────────────────────────────────
+
+app.get('/adventure/summary', (req, res) => {
+  if (!existsSync(`${CAMPAIGN_DIR}/session.json`)) {
+    return res.status(400).json({ error: 'no_campaign', message: 'No campaign in progress.' });
+  }
+
+  const session = readJSON(`${CAMPAIGN_DIR}/session.json`);
+  const encounterIds = session.encounter_ids ?? [];
+  const sections = ['# Adventure Log\n'];
+
+  const worldPrimerPath = `${CAMPAIGN_DIR}/world_primer.md`;
+  if (existsSync(worldPrimerPath)) {
+    sections.push(`## World\n\n${readFile(worldPrimerPath)}\n`);
+  }
+
+  for (const encId of encounterIds) {
+    const summaryPath = `${CAMPAIGN_DIR}/encounters/${encId}_summary.md`;
+    if (existsSync(summaryPath)) {
+      sections.push(`## ${encId}\n\n${readFile(summaryPath)}\n`);
+    }
+  }
+
+  res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="adventure-summary.md"');
+  return res.send(sections.join('\n---\n\n'));
+});
+
+// ── GET /adventure/transcript ─────────────────────────────────────────────────
+
+app.get('/adventure/transcript', (req, res) => {
+  const transcriptPath = `${CAMPAIGN_DIR}/adventure_transcript.md`;
+  if (!existsSync(transcriptPath)) {
+    return res.status(404).json({ error: 'not_found', message: 'No transcript available yet.' });
+  }
+  res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="adventure-transcript.md"');
+  return res.send(readFile(transcriptPath));
 });
 
 // ── POST /reset ───────────────────────────────────────────────────────────────

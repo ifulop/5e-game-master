@@ -1,3 +1,4 @@
+import { existsSync } from 'fs';
 import { readJSON, writeJSON, appendToFile } from './fileUtils.js';
 
 export class StateManager {
@@ -29,6 +30,7 @@ export class StateManager {
 
     for (const [locationId, locationChanges] of Object.entries(byLocation)) {
       const path  = this._locationStatePath(locationId);
+      if (!existsSync(path)) continue;
       const state = readJSON(path);
       for (const change of locationChanges) {
         const obj = state.objects.find(o => o.id === change.object_id);
@@ -46,6 +48,7 @@ export class StateManager {
 
   applyNPCAttitudeChange(npcId, newAttitude, encounter, turn) {
     const path  = this._npcStatePath(npcId);
+    if (!existsSync(path)) return;
     const state = readJSON(path);
     state.current_attitude = newAttitude;
     state.attitude_history.push({ encounter, turn, attitude: newAttitude });
@@ -102,6 +105,7 @@ export class StateManager {
   _applyNPCUpdates(npcUpdates) {
     for (const u of npcUpdates) {
       const path  = this._npcStatePath(u.npc_id);
+      if (!existsSync(path)) continue;
       const state = readJSON(path);
 
       if (u.new_attitude) {
@@ -153,6 +157,7 @@ export class StateManager {
     for (const u of locationUpdates) {
       if (u.object_changes?.length > 0) {
         const path  = this._locationStatePath(u.location_id);
+        if (!existsSync(path)) continue;
         const state = readJSON(path);
         for (const change of u.object_changes) {
           const obj = state.objects.find(o => o.id === change.object_id);

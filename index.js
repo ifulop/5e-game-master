@@ -1,5 +1,5 @@
 import { existsSync } from 'fs';
-import { readJSON, writeJSON, writeFile, getEncounterExchange } from './fileUtils.js';
+import { readJSON, writeJSON, writeFile, appendToFile, getEncounterExchange } from './fileUtils.js';
 import * as intake from './agents/intake.js';
 import * as planner from './agents/planner.js';
 import * as resolver from './agents/resolver.js';
@@ -9,6 +9,10 @@ import { StateManager } from './stateManager.js';
 
 const CAMPAIGN_DIR = process.env.CAMPAIGN_DIR ?? 'campaign';
 const stateManager = new StateManager(CAMPAIGN_DIR);
+
+function logTranscript(text) {
+  appendToFile(`${CAMPAIGN_DIR}/adventure_transcript.md`, text);
+}
 
 // providedIntake: used by HTTP flow where intake was already completed via /intake endpoint
 export async function setupCampaign(providedIntake = null) {
@@ -23,6 +27,8 @@ export async function setupCampaign(providedIntake = null) {
   await planner.generateCampaign(intakeData);
 
   const campaign = readJSON(`${CAMPAIGN_DIR}/campaign.json`);
+  initMissingLocationStates(campaign, CAMPAIGN_DIR);
+  initMissingNPCStates(campaign, CAMPAIGN_DIR);
   const firstEnc = campaign.encounters[0];
   const session = {
     campaign_id: campaign.meta.campaign_id,
@@ -45,6 +51,8 @@ export async function setupCampaign(providedIntake = null) {
   const narration = await narrator.openScene();
   session.encounter_status = 'in_progress';
   writeJSON(`${CAMPAIGN_DIR}/session.json`, session);
+
+  logTranscript(`# Adventure Transcript\n\n## Opening Scene\n\n${narration}\n\n---\n\n`);
   return narration;
 }
 
@@ -117,13 +125,23 @@ export async function processTurn(playerInput) {
     stateManager.applyAttitudeChanges(result.npc_attitude_changes);
   }
 
-  // ── Step 6: Encounter resolution ─────────────────────────────────────────
+  // ── Step 6: Narrator ─────────────────────────────────────────────────────
+  // Always narrate the player's action first — including the turn that triggers resolution
+  const narration = await narrator.continueTurn(playerInput);
+  logTranscript(`**Player:** ${playerInput}\n\n${narration}\n\n---\n\n`);
+
+  // ── Step 7: Encounter resolution ─────────────────────────────────────────
   if (result.resolution_triggered) {
-    return await handleEncounterTransition(result);
+    await handleEncounterTransition(result);
+    const updatedSession = readJSON(`${CAMPAIGN_DIR}/session.json`);
+    return {
+      narration,
+      encounter_resolved: true,
+      resolution_type: result.resolution_triggered,
+      campaign_complete: updatedSession.encounter_status === 'complete',
+    };
   }
 
-  // ── Step 7: Narrator ──────────────────────────────────────────────────────
-  const narration = await narrator.continueTurn(playerInput);
   return narration;
 }
 
@@ -131,10 +149,7 @@ export async function handleEncounterTransition(resolverResult) {
   const session = readJSON(`${CAMPAIGN_DIR}/session.json`);
   const campaign = readJSON(`${CAMPAIGN_DIR}/campaign.json`);
 
-  // ── Step 1: Narrator closes current encounter ─────────────────────────────
-  const closeNarration = await narrator.closeEncounter(resolverResult);
-
-  // ── Step 2: Summarizer — fallback to raw exchange on failure ─────────────
+  // ── Step 1: Summarizer — fallback to raw exchange on failure ─────────────
   let summary;
   try {
     summary = await summarizer.summarize({
@@ -146,23 +161,24 @@ export async function handleEncounterTransition(resolverResult) {
     summary = getEncounterExchange(session);
   }
 
-  // ── Step 3: Planner reconciliation ────────────────────────────────────────
+  // ── Step 2: Planner reconciliation ────────────────────────────────────────
   const updates = await planner.closeEncounter({
     encounter_summary: summary,
     resolver_result: resolverResult
   });
 
-  // ── Step 4: Apply reconciliation bundle ───────────────────────────────────
+  // ── Step 3: Apply reconciliation bundle ───────────────────────────────────
   stateManager.applyReconciliationBundle(updates);
 
-  // ── Step 5: Check campaign complete ──────────────────────────────────────
+  // ── Step 4: Check campaign complete ───────────────────────────────────────
   const nextIndex = session.current_encounter_index + 1;
   if (nextIndex >= campaign.encounters.length) {
-    const openNarration = await narrator.closeCampaign();
-    return { closeNarration, openNarration, resolution_type: resolverResult.resolution_triggered };
+    session.encounter_status = 'complete';
+    writeJSON(`${CAMPAIGN_DIR}/session.json`, session);
+    return;
   }
 
-  // ── Step 6: Planner opens next encounter ──────────────────────────────────
+  // ── Step 5: Planner opens next encounter ──────────────────────────────────
   await planner.openNextEncounter({
     completed_summary: summary,
     next_encounter: campaign.encounters[nextIndex],
@@ -170,7 +186,7 @@ export async function handleEncounterTransition(resolverResult) {
     campaign_progress: campaign.progress
   });
 
-  // ── Step 7: Reset session for new encounter ───────────────────────────────
+  // ── Step 6: Reset session for next encounter ──────────────────────────────
   const nextEnc = campaign.encounters[nextIndex];
   session.prev_encounter_id = session.current_encounter_id;
   session.current_encounter_index = nextIndex;
@@ -181,12 +197,6 @@ export async function handleEncounterTransition(resolverResult) {
   session.turn_count = 0;
   session.player_inputs = [];
   writeJSON(`${CAMPAIGN_DIR}/session.json`, session);
-
-  // ── Step 8: Narrator opens new scene ─────────────────────────────────────
-  const openNarration = await narrator.openScene();
-  session.encounter_status = 'in_progress';
-  writeJSON(`${CAMPAIGN_DIR}/session.json`, session);
-  return { closeNarration, openNarration, resolution_type: resolverResult.resolution_triggered };
 }
 
 function createPlayerFiles(player) {
@@ -209,6 +219,52 @@ function createPlayerFiles(player) {
   };
   writeFile(`${CAMPAIGN_DIR}/players/${id}/${id}_narrator.md`, narratorCard);
   writeJSON(`${CAMPAIGN_DIR}/players/${id}/${id}_state.json`, state);
+}
+
+function initMissingNPCStates(campaign, dir) {
+  const npcIds = new Set(
+    campaign.encounters.flatMap(e => e.npcs ?? [])
+  );
+  for (const npcId of npcIds) {
+    const statePath = `${dir}/npcs/${npcId}/${npcId}_state.json`;
+    if (!existsSync(statePath)) {
+      const firstEnc = campaign.encounters.find(e => e.npcs?.includes(npcId));
+      writeJSON(statePath, {
+        npc_id: npcId,
+        first_appeared: firstEnc?.id ?? null,
+        current_attitude: 'neutral',
+        attitude_history: [],
+        knowledge_revealed: [],
+        knowledge_locked: [],
+        alive: true,
+        location: firstEnc?.location_id ?? null,
+        will_reappear: false,
+        scheduled_reappearance: null
+      });
+    }
+  }
+}
+
+function initMissingLocationStates(campaign, dir) {
+  const locationIds = new Set(
+    campaign.encounters.map(e => e.location_id).filter(Boolean)
+  );
+  for (const locId of locationIds) {
+    const statePath = `${dir}/locations/${locId}/${locId}_state.json`;
+    if (!existsSync(statePath)) {
+      writeJSON(statePath, {
+        location_id: locId,
+        first_appeared: campaign.encounters.find(e => e.location_id === locId)?.id ?? null,
+        times_visited: 0,
+        last_visited: null,
+        atmosphere_tags: [],
+        objects: [],
+        npcs_associated: [],
+        encounter_history: [],
+        world_state_flags: {}
+      });
+    }
+  }
 }
 
 function getActiveNPCAttitudes(encounter) {
