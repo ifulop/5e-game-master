@@ -53,7 +53,9 @@ export async function processTurn(playerInput) {
     revelation_conditions: currentEncounter.revelation_conditions,
     resolution_conditions: currentEncounter.resolution_conditions,
     location_secrets: campaign.location_secrets?.[currentEncounter.location_id] ?? null,
-    npc_attitudes: getActiveNPCAttitudes(currentEncounter)
+    npc_attitudes: getActiveNPCAttitudes(currentEncounter),
+    encounter_id: session.current_encounter_id,
+    turn: session.turn_count,
   });
   writeJSON(`${CAMPAIGN_DIR}/resolver_result.json`, result);
 
