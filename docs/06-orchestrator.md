@@ -146,7 +146,13 @@ async function handleEncounterTransition(resolverResult) {
   const session = readJSON('campaign/session.json');
   const campaign = readJSON('campaign/campaign.json');
 
-  // ── STEP 1: Summarizer (LLM Call 5) ───────────────────────
+  // ── STEP 1: Narrator — close current encounter (LLM Call 5) ──
+  //    Narrates the resolution beat and closes the scene.
+  //    Runs first so the player receives an immediate response to
+  //    the action that triggered resolution.
+  const closeNarration = await narrator.closeEncounter(resolverResult);
+
+  // ── STEP 2: Summarizer (LLM Call 6) ───────────────────────
   //    Single call at encounter close. Produces factual summary.
   const summary = await summarizer.summarize({
     encounter_exchange: getEncounterExchange(session),
@@ -154,7 +160,7 @@ async function handleEncounterTransition(resolverResult) {
   });
   writeFile(`campaign/encounters/enc_${session.current_encounter_id}_summary.md`, summary);
 
-  // ── STEP 2: Planner — reconciliation pass (LLM Call 6) ────
+  // ── STEP 3: Planner — reconciliation pass (LLM Call 7) ────
   //    Most expensive call. Reviews encounter holistically.
   //    Outputs a structured update bundle.
   const updates = await planner.closeEncounter({
@@ -162,16 +168,17 @@ async function handleEncounterTransition(resolverResult) {
     resolver_result: resolverResult
   });
 
-  // ── STEP 3: Apply reconciliation updates (pure code) ──────
+  // ── STEP 4: Apply reconciliation updates (pure code) ──────
   stateManager.applyReconciliationBundle(updates);
 
-  // ── STEP 4: Planner — open next encounter (LLM Call 7) ────
+  // ── STEP 5: Planner — open next encounter (LLM Call 8) ────
   //    Adjusts next encounter brief if needed.
   const nextIndex = session.current_encounter_index + 1;
 
   if (nextIndex >= campaign.encounters.length) {
     // Campaign complete — handle ending
-    return await narrator.closeCampaign();
+    const campaignClose = await narrator.closeCampaign();
+    return { closeNarration, openNarration: campaignClose };
   }
 
   await planner.openNextEncounter({
@@ -181,7 +188,7 @@ async function handleEncounterTransition(resolverResult) {
     campaign_progress: campaign.progress
   });
 
-  // ── STEP 5: Reset session for new encounter (pure code) ───
+  // ── STEP 6: Reset session for new encounter (pure code) ───
   session.current_encounter_index = nextIndex;
   session.current_encounter_id = campaign.encounters[nextIndex].id;
   session.encounter_status = 'awaiting_scene_open';
@@ -189,10 +196,10 @@ async function handleEncounterTransition(resolverResult) {
   session.player_inputs = [];
   writeJSON('campaign/session.json', session);
 
-  // ── STEP 6: Narrator — open new scene (LLM Call 8) ────────
+  // ── STEP 7: Narrator — open new scene (LLM Call 9) ────────
   //    Fresh context window — no prior turn history.
-  const narration = await narrator.openScene();
-  return narration;
+  const openNarration = await narrator.openScene();
+  return { closeNarration, openNarration };
 }
 ```
 
@@ -350,11 +357,76 @@ class StateManager {
 
 ## Error Handling Considerations
 
-- If the resolver fails, do not proceed — the turn cannot be processed without condition evaluation.
-- If the planner fails during revelation append, the narrator can still run — it just won't have the new REVEALED content. Log the failure and retry on the next turn.
-- If the narrator fails, return an error to the player and allow retry.
-- If the summarizer fails at encounter close, the reconciliation pass can fall back to reading the raw exchange directly (more expensive but functional).
-- All JSON writes should be atomic (write to temp file, then rename) to prevent corruption on crash.
+### Per-Agent Failures
+
+- If the resolver fails, do not proceed — the turn cannot be processed without condition evaluation. session.json is NOT written; the turn is not consumed. The player may resend the same input.
+- If the planner fails during revelation append, the narrator can still run — it just won't have the new REVEALED content. Log the failure and set a retry flag in session.json (`pending_revelation_triggers: [...]`). Retry the append at the start of the next turn before calling the resolver.
+- If the narrator fails, return an error to the player and allow retry. Turn state is preserved — the resolver has already run but session.json turn_count is not incremented further.
+- If `narrator.closeEncounter()` fails during encounter transition, do not proceed — the player would receive no response to their resolution action. Return an error and allow retry of the same input.
+- If the summarizer fails at encounter close, fall back to passing the raw `encounter_exchange` string directly to `planner.closeEncounter()` as the `encounter_summary` field. Skip writing `enc_XXX_summary.md`. Log the fallback.
+- All JSON writes must use the atomic write pattern (write to temp file, then `fs.renameSync` to target) to prevent corruption on crash.
+
+### API Rate Limits and Transient Errors
+
+Anthropic API errors divide into two categories:
+
+**Retriable:** Retry with exponential backoff.
+- `429` — rate limit exceeded
+- `529` / `overloaded_error` — API overloaded
+- `500` — server error
+- Network timeout / connection reset
+
+**Non-retriable:** Log and surface immediately as an application error.
+- `400` — bad request (malformed prompt — fix the prompt, not the retry logic)
+- `401` — invalid API key
+- `403` — permission denied
+- `404` — model not found
+
+**Retry strategy:** exponential backoff with jitter.
+- Initial delay: 1 second
+- Multiplier: 2× per attempt
+- Jitter: ±20% of the computed delay (prevents thundering herd)
+- Maximum delay: 30 seconds
+- Maximum attempts: 3 for all calls except `generateCampaign` (see below)
+- On final failure: surface as an application error per the per-agent rules above
+
+```javascript
+async function withRetry(fn, maxAttempts = 3) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (!isRetriable(err) || attempt === maxAttempts) throw err;
+      const base = Math.min(1000 * Math.pow(2, attempt - 1), 30000);
+      const jitter = base * 0.2 * (Math.random() * 2 - 1);
+      await sleep(base + jitter);
+    }
+  }
+}
+
+function isRetriable(err) {
+  const status = err.status ?? err.statusCode;
+  return status === 429 || status === 529 || status === 500 || err.code === 'ECONNRESET';
+}
+```
+
+### Campaign Generation Partial Failure
+
+`generateCampaign()` is the highest-risk call — it writes many files in sequence. A failure mid-write leaves `campaign/` in a partial state (some files present, others absent).
+
+**Detection:** On `POST /setup`, before calling `planner.generateCampaign()`, check for a partial state:
+```javascript
+const hasIntake = existsSync('campaign/intake.json');
+const hasCampaign = existsSync('campaign/campaign.json');
+if (hasIntake && !hasCampaign) {
+  // Partial state from a previous failed setup
+  throw { error: 'setup_failed', message: 'Partial campaign detected. Delete campaign/ and retry.' };
+}
+```
+
+**Recovery:** The operator must manually delete `campaign/` and restart from intake. Automatic cleanup is not safe — the partial files may be useful for debugging the prompt failure.
+
+**Retry budget for `generateCampaign`:** Use 2 attempts maximum (not 3). This call is expensive and a second failure after one retry likely indicates a prompt or quota problem, not a transient error.
 
 ## Prompt Caching Optimization
 

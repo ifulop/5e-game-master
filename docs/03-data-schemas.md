@@ -253,6 +253,73 @@ The `npc_attitude_changes` array is populated whenever the resolver determines t
 
 The resolver may transition any NPC between any two of these five states in a single turn. Transitions are not constrained to adjacent states — a cooperative NPC can become hostile in one turn if the narrative warrants it. The planner sets the initial attitude (from `unknown` to any of the five) at campaign generation time.
 
+## reconciliation_bundle (planner output — not persisted as a file)
+
+Output of the Planner's reconciliation pass (`planner.closeEncounter()`). Consumed directly by the State Manager's `applyReconciliationBundle()` method. Not written to disk — passed in memory from planner to state manager during encounter transition.
+
+```json
+{
+  "npc_updates": [
+    {
+      "npc_id": "vesper",
+      "encounter": "enc_002",
+      "new_attitude": "cautious",
+      "knowledge_newly_revealed": ["warden_mentioned"],
+      "narrator_card_append": "At the close of enc_002, Vesper had warmed slightly to the party after they offered her protection. She disclosed that a figure called The Warden had been pressuring her, though she refused to name him. She departed before the guard patrol closed in."
+    }
+  ],
+
+  "player_updates": [
+    {
+      "player_id": "aria",
+      "new_behavioral_tags": ["shows_mercy_to_frightened_npcs"],
+      "new_knowledge": ["vesper_docks_link", "warden_referenced"],
+      "narrator_card_append": "Aria showed restraint when Vesper grew frightened, pulling back from the interrogation rather than pressing harder. She now holds the Magistrate's gala invitation."
+    }
+  ],
+
+  "location_updates": [
+    {
+      "location_id": "pier_9_wharf",
+      "object_changes": [
+        {
+          "location": "pier_9_wharf",
+          "object_id": "harbormaster_door",
+          "new_state": "relocked",
+          "interacted_by": "aria",
+          "interaction": "relocked on exit to conceal breach"
+        }
+      ],
+      "narrator_card_append": "The wharf was left as the party found it, the harbormaster's office door relocked. The guard patrol that passed during enc_002 did not detect the breach."
+    }
+  ],
+
+  "campaign_updates": {
+    "world_state": {
+      "flags": {
+        "players_know_about_warden": true
+      }
+    },
+    "progress": {
+      "current_encounter_id": "enc_003",
+      "revealed_plot_threads": ["warden_referenced"]
+    },
+    "conditions_triggered": ["vesper_warden_hint", "enc_002_transition"]
+  }
+}
+```
+
+**Field notes:**
+
+- `npc_updates[].knowledge_newly_revealed` — items moved from `knowledge_locked[]` to `knowledge_revealed[]` in `npc_state.json`; the planner decides which locked items to surface based on arc progression
+- `npc_updates[].narrator_card_append` — past-tense prose appended to `npc_narrator.md`; factual record of how the NPC left the encounter, not narration
+- `player_updates[].new_behavioral_tags` — deduplication is handled by the state manager; planner should include the tag even if it may already exist
+- `location_updates[].object_changes` — same shape as `object_state_changes[]` in `resolver_result.json`; used for end-of-encounter object corrections the resolver did not catch mid-turn
+- `campaign_updates.conditions_triggered[]` — condition IDs to mark `triggered: true` in the relevant encounter's `revelation_conditions[]` or `resolution_conditions` in `campaign.json`
+- Any top-level key (`npc_updates`, `player_updates`, `location_updates`, `campaign_updates`) may be an empty array or empty object if there is nothing to update for that category
+
+---
+
 ## npc_state.json
 
 Per-NPC structured state. Updated by State Manager.

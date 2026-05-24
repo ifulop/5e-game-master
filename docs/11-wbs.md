@@ -64,7 +64,7 @@ For each agent file, implement the minimum interface the orchestrator needs — 
 - [ ] `intake.js` → `run()` returns the example intake.json from `docs/03-data-schemas.md`
 - [ ] `resolver.js` → `evaluate(input)` returns a fixture resolver_result.json (no revelation, no resolution, no attitude changes)
 - [ ] `planner.js` → `generateCampaign(intake)`, `applyRevelations(triggers)`, `updateNarrativeForStateChanges(changes)`, `closeEncounter(params)`, `openNextEncounter(params)` — each logs its call and returns a minimal valid fixture
-- [ ] `narrator.js` → `openScene()`, `continueTurn(input)`, `closeCampaign()` — each returns a hardcoded narration string
+- [ ] `narrator.js` → `openScene()`, `continueTurn(input)`, `closeEncounter(resolverResult)`, `closeCampaign()` — each returns a hardcoded narration string
 - [ ] `summarizer.js` → `summarize(params)` returns a hardcoded summary string
 
 ### 1.2 Orchestrator — Setup Phase (`setupCampaign()` in `index.js`)
@@ -87,13 +87,14 @@ Implement all steps exactly as specified in `docs/06-orchestrator.md`:
 - [ ] **Step 7** — Call `narrator.continueTurn(playerInput)` → return narration
 
 ### 1.4 Orchestrator — Encounter Transition (`handleEncounterTransition(resolverResult)`)
-- [ ] **Step 1** — Call `summarizer.summarize(...)` → write `enc_XXX_summary.md`
-- [ ] **Step 2** — Call `planner.closeEncounter(...)` → receive reconciliation bundle
-- [ ] **Step 3** — Call `stateManager.applyReconciliationBundle(updates)`
-- [ ] **Step 4** — Check `nextIndex >= campaign.encounters.length`; if so, call `narrator.closeCampaign()` and return
-- [ ] **Step 5** — Call `planner.openNextEncounter(...)`
-- [ ] **Step 6** — Reset `session.json` for new encounter (new index, id, `awaiting_scene_open`, turn_count: 0, player_inputs: [])
-- [ ] **Step 7** — Call `narrator.openScene()` → return narration
+- [ ] **Step 1** — Call `narrator.closeEncounter(resolverResult)` → store `closeNarration` (immediate player-facing response to the resolution turn)
+- [ ] **Step 2** — Call `summarizer.summarize(...)` → write `enc_XXX_summary.md`
+- [ ] **Step 3** — Call `planner.closeEncounter(...)` → receive reconciliation bundle
+- [ ] **Step 4** — Call `stateManager.applyReconciliationBundle(updates)`
+- [ ] **Step 5** — Check `nextIndex >= campaign.encounters.length`; if so, call `narrator.closeCampaign()` and return `{ closeNarration, openNarration }`
+- [ ] **Step 6** — Call `planner.openNextEncounter(...)`
+- [ ] **Step 7** — Reset `session.json` for new encounter (new index, id, `awaiting_scene_open`, turn_count: 0, player_inputs: [])
+- [ ] **Step 8** — Call `narrator.openScene()` → return `{ closeNarration, openNarration }`
 
 **Verify:** With all agents stubbed, call `setupCampaign()` then three turns of `processTurn()` then one more turn that triggers the stub's hardcoded resolution. All session.json writes should be correct. No errors thrown.
 
@@ -235,13 +236,15 @@ Context loading is a separate concern from narration. Build it before the LLM ca
 ### 5.3 Narrator Implementation — LLM Calls (`agents/narrator.js`)
 - [ ] `openScene()` — encounter open context: enc_XXX+1.md, enc_XXX_summary.md (previous), player cards, NPC cards, location card; no turn history (fresh context window per spec)
 - [ ] `continueTurn(playerInput)` — LLM Call 4: Tier 1 + Tier 2 context; full turn history for current encounter
-- [ ] `closeCampaign()` — end-of-campaign narration; no strict input contract; use campaign summary context
+- [ ] `closeEncounter(resolverResult)` — LLM Call 5: same Tier 1 + Tier 2 context as `continueTurn`; also receives `resolution_type` from resolverResult; narrates the resolution beat and closes the scene; does NOT open the next encounter
+- [ ] `closeCampaign()` — end-of-campaign narration; all enc_XXX_summary.md files + player cards; see input contract in `docs/05-agents.md`
 - [ ] Add prompt caching header for system prompt + world_primer.md prefix (static across all narrator calls in a session)
 - [ ] Add prompt caching header for player_narrator.md cards (change only post-encounter)
 
 ### 5.4 Replace Narrator Stubs
 - [ ] Swap `openScene` stub
 - [ ] Swap `continueTurn` stub
+- [ ] Swap `closeEncounter` stub
 - [ ] Swap `closeCampaign` stub
 
 **Verify:** Inspect the exact prompt assembled before each LLM call. Confirm `arc_brief.md`, `npc_hidden.md`, and `campaign.json` are absent. Confirm the REVEALED section is present in the enc_XXX.md text when a revelation has been triggered. Confirm NPC narrator card includes the most recent attitude-shift note when an attitude change occurred earlier in the encounter.
@@ -310,6 +313,7 @@ Intake can be built in any phase since it runs once at the start and its output 
 - [ ] `planner.openNextEncounter()` — real agent
 - [ ] `narrator.openScene()` — real agent
 - [ ] `narrator.continueTurn()` — real agent
+- [ ] `narrator.closeEncounter()` — real agent
 - [ ] `narrator.closeCampaign()` — real agent
 - [ ] `summarizer.summarize()` — real agent
 

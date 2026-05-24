@@ -41,6 +41,28 @@ to outwit your enemies?" rather than "Combat ratio: 0-100%".
 When you have gathered enough information, produce a structured JSON
 output containing all preferences. Do not reveal that you are producing
 JSON — simply end the conversation naturally and generate the output.
+
+Output this exact structure:
+
+{
+  "party": [
+    {
+      "name": "string",
+      "class": "string",
+      "personality": "string",
+      "backstory_hook": "string",
+      "playstyle_notes": "string"
+    }
+  ],
+  "preferences": {
+    "tone": "string",
+    "primary_goal": "string",
+    "time_available": "string",
+    "combat_ratio": 0.0,
+    "problem_solving_preference": "string",
+    "content_limits": ["string"]
+  }
+}
 ```
 
 ### Conversation Flow
@@ -133,19 +155,54 @@ You are performing a post-encounter reconciliation. The encounter has
 concluded and you must update all affected entities holistically.
 
 Review the encounter summary and produce a structured JSON bundle
-containing ALL updates to be applied:
+containing ALL updates to be applied. Output ONLY valid JSON — no prose
+outside the JSON object.
 
-1. enc_XXX_summary.md content (if summarizer hasn't run yet)
-2. NPC narrator card appends (post-encounter status for each NPC who appeared)
-3. NPC state updates (attitude, knowledge_revealed/locked, location)
-4. Player narrator card appends (new behaviors, relationship changes)
-5. Player state updates (behavioral_tags, planner_flags, knowledge)
-6. Location narrator card appends (post-encounter changes)
-7. Location state updates (object states, world_state_flags)
-8. campaign.json updates (progress, world_state, flags)
+Write all narrator_card_append values in past tense, factually.
+These are records, not narration. Consider arc-level implications
+when setting knowledge_newly_revealed and campaign flags.
 
-Write all prose in past tense, factually. These are records, not narration.
-Consider the arc-level implications of the outcome when updating planner_flags.
+Output this exact structure (omit empty arrays/objects entirely):
+
+{
+  "npc_updates": [
+    {
+      "npc_id": "string",
+      "encounter": "enc_XXX",
+      "new_attitude": "frightened|hostile|neutral|cautious|cooperative",
+      "knowledge_newly_revealed": ["knowledge_item_id"],
+      "narrator_card_append": "Past-tense factual prose appended to npc_narrator.md."
+    }
+  ],
+  "player_updates": [
+    {
+      "player_id": "string",
+      "new_behavioral_tags": ["tag_string"],
+      "new_knowledge": ["knowledge_item_id"],
+      "narrator_card_append": "Past-tense factual prose appended to player_narrator.md."
+    }
+  ],
+  "location_updates": [
+    {
+      "location_id": "string",
+      "object_changes": [
+        {
+          "location": "location_id",
+          "object_id": "object_id",
+          "new_state": "string",
+          "interacted_by": "player_id or party",
+          "interaction": "description of what happened"
+        }
+      ],
+      "narrator_card_append": "Past-tense factual prose appended to location_narrator.md."
+    }
+  ],
+  "campaign_updates": {
+    "world_state": { "flags": {} },
+    "progress": { "current_encounter_id": "enc_XXX", "revealed_plot_threads": [] },
+    "conditions_triggered": ["condition_id"]
+  }
+}
 ```
 
 ### System Prompt Guidance — Open Next Encounter
@@ -318,13 +375,39 @@ Rules:
 Always loaded:
 - world_primer.md (in system prompt)
 - enc_XXX.md (current encounter, including any REVEALED sections)
-- session.json → last_encounter_summary (previous encounter context)
 - Full turn-by-turn conversation exchange (this encounter only)
+- enc_{previous_index}_summary.md (previous encounter context — omit when current_encounter_index === 0, i.e. the first encounter has no prior summary)
 
 Loaded on demand:
 - npc_narrator.md (only NPCs active in current encounter)
 - player_narrator.md (all party members)
 - location_narrator.md (current location)
+
+### Output — Open New Scene
+Player-facing narration. Unlike all other narrator calls, this is an initiation — it is not a response to player input. Should:
+- Establish the atmosphere and setting of the new encounter from the location and encounter brief
+- Introduce or re-introduce active NPCs through action or presence, not description
+- Give the party a clear sense of what they are walking into without telegraphing hidden conditions
+- End with an open situation that draws the players' first input — do not ask a direct question; leave the scene in motion
+
+### Input Contract — Close Encounter (resolution turn)
+Always loaded:
+- world_primer.md (in system prompt — tone must match the scene close)
+- enc_XXX.md (current encounter, including any REVEALED sections)
+- Full turn-by-turn conversation exchange (this encounter only, including the resolution turn's player input)
+- resolution_type: "victory" | "failure" | "partial" (from resolver_result.json — determines the emotional register of the closing beat)
+
+Loaded on demand:
+- npc_narrator.md (active NPCs — their reactions close the scene)
+- player_narrator.md (all party members)
+- location_narrator.md (current location)
+
+### Output — Close Encounter
+Player-facing narration. Should:
+- Acknowledge the specific player action that triggered resolution
+- Describe the immediate aftermath and NPC reactions
+- Close the scene with a beat appropriate to the outcome (victory: satisfied/triumphant; failure: tense/defeated; partial: bittersweet)
+- Not introduce new plot points or foreshadow the next encounter — that is openScene's job
 
 ### Input Contract — Open New Scene (encounter transition)
 - world_primer.md (in system prompt)
@@ -334,6 +417,21 @@ Loaded on demand:
 - npc_narrator.md (NPCs in new encounter)
 - location_narrator.md (new encounter location)
 - No turn-by-turn history — fresh context window for new encounter
+
+### Input Contract — Close Campaign (end of final encounter)
+- world_primer.md (in system prompt — sets tone for the epilogue)
+- All enc_XXX_summary.md files in encounter order (full factual record of the campaign; the narrator uses these to reflect on what the party accomplished and what was left unresolved)
+- player_narrator.md for all party members (character arcs and behavioral patterns to weave into the epilogue)
+- No encounter brief — there is no next scene
+- No turn history — the campaign turn loop has ended
+
+### Output — Close Campaign
+Player-facing epilogue prose. No structured format or length constraint. Should:
+- Reflect the overall outcome of the campaign based on the encounter summaries
+- Acknowledge the party's key decisions and their consequences
+- For each surviving NPC, invent a humorous, 1-2 sentence outcome that describes what they ended up doing after the campaign.
+- For each player character, invent a humorous, 1-2 sentence outcome that describes what they ended up doing after the campaign (these should remain consistent with their character arcs and behavioral patterns). 
+- Match the tone established in world_primer.md throughout
 
 ### NEVER Loaded Into Narrator Context
 - arc_brief.md
