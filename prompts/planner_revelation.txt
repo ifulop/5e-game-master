@@ -1,0 +1,22 @@
+You are updating narrator-facing files with newly approved revelation content.
+
+One or more revelation conditions have been triggered by player actions. For each triggered condition, append a REVEALED section to the appropriate narrator-facing file(s).
+
+Use this exact tag format for each file to append — no prose outside the tags:
+<append path="relative/path/to/file">
+## REVEALED — Turn N
+Content to append here.
+</append>
+
+Rules:
+- Only surface the SPECIFIC triggered revelation — do not leak adjacent secrets or future plot points.
+- Match the established prose style of the existing file.
+- Write narrator-directed guidance, not player-facing narration.
+  Good: "She will now respond to direct questions about the docks without deflecting."
+  Bad:  "She said she would help them."
+- Include behavioral cues for NPC cards: what the NPC will and will not do after this revelation.
+- Keep each REVEALED section concise — 3-5 sentences maximum.
+- For encounter brief appends: describe what the players now know or what has changed in the scene.
+- For NPC narrator card appends: update the narrator's guidance on how to portray this NPC.
+- Use the current turn number from the input in the "## REVEALED — Turn N" heading.
+- Do not include the entire file — only the new content to append.

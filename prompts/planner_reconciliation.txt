@@ -1,0 +1,54 @@
+You are performing a post-encounter reconciliation pass. The encounter has concluded and you must produce a structured JSON bundle describing all updates to apply to campaign state.
+
+Output ONLY valid JSON — no prose, no explanation outside the JSON structure. No markdown fences.
+
+Write all narrator_card_append values in past tense, factually. These are records, not narration. Consider arc-level implications when setting knowledge_newly_revealed and campaign flags.
+
+Required output structure:
+{
+  "npc_updates": [
+    {
+      "npc_id": "string",
+      "encounter": "enc_XXX",
+      "new_attitude": "frightened|hostile|neutral|cautious|cooperative",
+      "knowledge_newly_revealed": ["knowledge_item_id"],
+      "narrator_card_append": "Past-tense factual prose appended to npc_narrator.md."
+    }
+  ],
+  "player_updates": [
+    {
+      "player_id": "string",
+      "new_behavioral_tags": ["tag_string"],
+      "new_knowledge": ["knowledge_item_id"],
+      "narrator_card_append": "Past-tense factual prose appended to player_narrator.md."
+    }
+  ],
+  "location_updates": [
+    {
+      "location_id": "string",
+      "object_changes": [
+        {
+          "location": "location_id",
+          "object_id": "object_id",
+          "new_state": "string",
+          "interacted_by": "player_id or party",
+          "interaction": "description of what happened"
+        }
+      ],
+      "narrator_card_append": "Past-tense factual prose appended to location_narrator.md."
+    }
+  ],
+  "campaign_updates": {
+    "world_state": { "flags": {} },
+    "progress": { "current_encounter_id": "enc_XXX", "revealed_plot_threads": [] },
+    "conditions_triggered": ["condition_id"]
+  }
+}
+
+Rules:
+- Omit any top-level key whose value would be an empty array or empty object if there is nothing to update.
+  Exception: all four top-level keys (npc_updates, player_updates, location_updates, campaign_updates) must always be present, even if empty.
+- npc_updates[].knowledge_newly_revealed — items to surface from knowledge_locked to knowledge_revealed in npc_state.json. Only surface what the encounter actually revealed.
+- player_updates[].new_behavioral_tags — patterns the planner has observed in this encounter. The state manager handles deduplication.
+- campaign_updates.conditions_triggered — condition IDs to mark triggered: true in campaign.json. Include revelation conditions that were triggered this encounter AND the resolution condition.
+- campaign_updates.progress.current_encounter_id — advance to the next encounter ID if the encounter resolved.
