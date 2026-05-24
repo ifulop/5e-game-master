@@ -1,5 +1,5 @@
 import express from 'express';
-import { existsSync } from 'fs';
+import { existsSync, rmSync, renameSync } from 'fs';
 import { readJSON, writeJSON } from './fileUtils.js';
 import * as intake from './agents/intake.js';
 import * as narrator from './agents/narrator.js';
@@ -130,6 +130,9 @@ app.post('/setup', async (req, res) => {
   try {
     const intakeData = readJSON(intakePath);
     const narration = await setupCampaign(intakeData);
+    // Clean up the temporary intake conversation now that setup succeeded
+    const convPath = `${CAMPAIGN_DIR}/intake_conversation.json`;
+    if (existsSync(convPath)) rmSync(convPath);
     return res.json({ narration });
   } catch (err) {
     if (err?.status === 429 || err?.status === 529 || err?.status === 503) {
@@ -207,6 +210,24 @@ app.post('/scene', async (req, res) => {
       return res.status(503).json({ error: 'llm_unavailable', message: err.message });
     }
     return res.status(500).json({ error: 'narrator_failed', message: err.message });
+  }
+});
+
+// ── POST /reset ───────────────────────────────────────────────────────────────
+
+app.post('/reset', (req, res) => {
+  if (!existsSync(CAMPAIGN_DIR)) {
+    return res.status(400).json({ error: 'no_campaign', message: 'No campaign directory exists. Nothing to reset.' });
+  }
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const archiveDir = `${CAMPAIGN_DIR}-archive-${timestamp}`;
+
+  try {
+    renameSync(CAMPAIGN_DIR, archiveDir);
+    return res.json({ archived: archiveDir, message: 'Campaign archived. Send POST /intake to begin a new one.' });
+  } catch (err) {
+    return res.status(500).json({ error: 'reset_failed', message: err.message });
   }
 });
 
