@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { existsSync } from 'fs';
+import { existsSync, rmSync } from 'fs';
 import { readJSON, readFile } from '../fileUtils.js';
 import { fileURLToPath } from 'url';
 import { resolve, dirname } from 'path';
@@ -130,17 +130,27 @@ export async function openScene() {
   const playerCards = loadPlayerCards(dir, playerIds);
   const { encBrief, npcCards, locationCard, prevSummary } = loadEncounterContext(dir, session);
 
+  // Include resume brief if present (campaign was saved mid-session) — one-time use
+  const saveBriefPath = `${dir}/save_brief.md`;
+  const saveBrief = safeReadFile(saveBriefPath);
+
   const parts = [
     npcCards && `## NPC Cards\n\n${npcCards}`,
     locationCard && `## Location\n\n${locationCard}`,
     prevSummary && `## Previous Encounter Summary\n\n${prevSummary}`,
+    saveBrief && `## Campaign Resume Brief\n\n${saveBrief}`,
     `## Current Encounter Brief\n\n${encBrief}`,
   ].filter(Boolean);
 
-  return callNarrator(
+  const narration = await callNarrator(
     buildSystemMessages(worldPrimer, playerCards, parts.join('\n\n')),
     'Open the scene.'
   );
+
+  // Delete save_brief.md after first use so it doesn't pollute future scene opens
+  if (saveBrief && existsSync(saveBriefPath)) rmSync(saveBriefPath);
+
+  return narration;
 }
 
 export async function continueTurn(playerInput) {

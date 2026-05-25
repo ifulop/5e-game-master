@@ -1,133 +1,130 @@
-# 5e RPG Game Master Agent
+# 5e RPG Dungeon Master Agent
 
-A generative Game Master system for running Fifth Edition Rules-compatible RPG campaigns with a strict separation between hidden story logic and player-facing narration.
+A generative Dungeon Master engine for running Fifth Edition Rules-compatible RPG campaigns. The system generates and manages a hidden story arc, reveals content encounter-by-encounter, and responds dynamically to player choices — while keeping secret plot information strictly separated from what the players see.
 
-The project is designed around a simple rule: the system that knows the secrets is not the system that talks to the players. A hidden planning layer manages the story arc, encounter outcomes, revelations, and world state. A separate narration layer only sees information that has already been explicitly released.
+The central design rule: **the system that knows the secrets is not the system that talks to the players.** A hidden planning layer controls the story arc and all reveal timing. A separate narration layer only ever sees information that has already been explicitly released to it.
 
-## Project Status
+---
 
-This repository is currently a **design-first spec repo**. The architecture, data model, file layout, agent contracts, orchestration flow, build plan, and testing strategy are documented. Implementation is planned but not yet committed in this repository.
+## Getting Started
 
-Current state:
-- Core product and architecture spec complete
-- Data schemas complete
-- Agent responsibilities and prompt contracts complete
-- Orchestrator and information-flow design complete
-- Work Breakdown Structure complete
-- Testing strategy complete
-- Runtime code not yet scaffolded
+### Prerequisites
 
-## What This Project Is
+- Node.js 18+
+- An Anthropic API key
 
-This project implements a campaign engine that can:
-- onboard a party through a conversational intake flow
-- generate a full hidden campaign arc from those preferences
-- run encounter-by-encounter narration in a player-facing voice
-- evaluate player intent against hidden resolution and revelation conditions
-- update world state, NPC attitudes, player knowledge, and encounter materials over time
-- carry campaign consequences forward across encounters
+### Setup
 
-The target experience is a responsive DM that feels improvisational to players while still preserving hidden structure behind the scenes.
+```bash
+npm install
+```
 
-## Core Design Principles
+Create a `.env` file in the project root:
 
-1. **Two cognitive layers**
-   A hidden Planning Layer controls the campaign arc and reveal timing. A separate Narration Layer talks to players and never sees hidden material.
+```
+ANTHROPIC_API_KEY=your_key_here
+```
 
-2. **Need-to-know file access**
-   Every component only reads the files required for its job. This is a correctness rule, not just an optimization.
+### Run
 
-3. **Pure-code orchestration**
-   Routing, sequencing, and state mutation are deterministic code. Agents handle language tasks. Code handles control flow.
+```bash
+node server.js
+```
 
-4. **JSON for code, markdown for LLMs**
-   Structured state lives in JSON. Narrative guidance and prose live in markdown.
+Open `http://localhost:3000` in your browser.
 
-5. **Tiered context loading**
-   The narrator never loads the whole campaign. Each call gets only the smallest relevant context slice.
+---
 
-## Why The Separation Matters
+## How It Works
 
-Traditional single-agent DM designs tend to fail in one of two ways:
-- the model leaks hidden information because it already knows the full plot
-- the model starts steering players toward predefined outcomes because it can see the win conditions
+### Campaign setup
 
-This design avoids that by splitting responsibilities:
-- the **Planner** knows the arc, hidden motivations, unrevealed plot threads, and future encounters
-- the **Narrator** only knows what is currently visible in encounter briefs, narrator cards, and prior summaries
-- the **Resolver** evaluates player actions into structured results but does not narrate or route
-- the **Orchestrator** decides what runs next using deterministic code
+1. Click **New Campaign** and fill out the character creation form — name, class, personality, backstory, and playstyle for each party member, plus campaign preferences (tone, goal, session length, combat style, content limits).
+2. Submit the form. The system summarises your characters and invites you to add any extra details before generation begins.
+3. Click **Generate Campaign** (or **Add Details** first). The Planner generates the full campaign arc, including all encounter briefs, NPC cards, location files, and hidden plot threads.
+4. The Narrator opens the first scene.
 
-## System Overview
+### Gameplay
 
-### Main Components
+Type what your party does and press **Act** (or Enter). Each turn:
 
-| Component | Type | Role |
+- The **Resolver** evaluates the input against hidden resolution and revelation conditions
+- Object and NPC state changes are applied by the **State Manager**
+- If a revelation is triggered, the **Planner** appends newly unlocked content to the relevant narrator-facing files
+- The **Narrator** responds using only the information it is permitted to see
+
+When an encounter resolves, a **Summarizer** writes a factual summary, the **Planner** reconciles world state changes, and the Narrator opens the next scene.
+
+### Saving and resuming
+
+- **Save** — saves the current state and stays in the game
+- **Save & Quit** — saves and returns to the home screen
+- **Save & Continue** (at encounter boundaries) — saves before opening the next scene
+- The home screen shows all saved campaigns; click any to resume
+
+On resume, the Narrator receives a brief that reconstructs the story context — where you left off, prior encounter summaries, and recent turns.
+
+### End of campaign
+
+After the final encounter resolves, click **Receive Epilogue** for a closing narration. The adventure summary and full transcript are available to download from the completion screen.
+
+---
+
+## Architecture
+
+### Two cognitive layers
+
+| Layer | Components | What it sees |
 |---|---|---|
-| Intake Agent | LLM | Conversational onboarding and preference gathering |
-| Planner Agent | LLM | Campaign generation, revelations, reconciliation, encounter adjustment |
-| Resolver Agent | LLM | Turn-by-turn condition evaluation into structured JSON |
-| Narrator Agent | LLM | Player-facing scene narration and NPC portrayal |
-| Summarizer Agent | LLM | End-of-encounter factual summary |
-| Orchestrator | Pure code | Controls execution order and turn loop |
-| State Manager | Pure code | Applies JSON state updates and file mutations |
+| Planning | Planner, Resolver | Full campaign arc, all hidden conditions, NPC motivations, future encounters |
+| Narration | Narrator, Summarizer | Only released encounter briefs, narrator cards, prior summaries |
 
-### Runtime Flow
+The Narrator never receives `arc_brief.md`, any `npc_hidden.md`, resolution conditions, revelation conditions, or future encounter content.
 
-#### 1. Campaign setup
-- Intake Agent gathers party details and preferences into `intake.json`
-- Planner Agent generates the campaign file tree
-- Orchestrator creates `session.json` and player files
-- Narrator opens the first scene
+### Agents
 
-#### 2. Per-turn loop
-- Orchestrator records the player input
-- Resolver evaluates the turn and writes `resolver_result.json`
-- State Manager applies mechanical object changes
-- Planner appends newly revealed information when triggered
-- Planner updates narrator-facing prose when object changes need narrative treatment
-- State Manager applies NPC attitude shifts before narration
-- Narrator responds using the updated encounter materials
-
-#### 3. Encounter transition
-- Summarizer writes an encounter summary
-- Planner performs reconciliation and produces a structured update bundle
-- State Manager fans those updates out across campaign, NPC, player, and location files
-- Planner adjusts or confirms the next encounter
-- Orchestrator resets session state
-- Narrator opens the new scene
-
-## Information Architecture
-
-### Three-tier content model
-
-| Tier | Who can read it | Examples |
+| Agent | Type | Role |
 |---|---|---|
-| Tier 1 | Narrator + Planner | `enc_XXX.md`, `world_primer.md`, narrator cards |
-| Tier 2 | Resolver + Planner + code | `campaign.json` conditions, `session.json`, state JSON files |
-| Tier 3 | Planner only | `arc_brief.md`, `npc_hidden.md`, future encounter implications |
+| Intake | LLM | Receives form data, summarises characters, optionally enriches with additional player details |
+| Planner | LLM | Generates campaign arc, appends revelations, reconciles state after encounters, adjusts next encounters |
+| Resolver | LLM | Evaluates each player turn into a structured JSON result: resolution triggers, revelation triggers, NPC attitude changes, object state changes |
+| Narrator | LLM | Player-facing scene narration; never sees hidden information |
+| Summarizer | LLM | Writes a factual end-of-encounter summary used in subsequent context |
+| Orchestrator | Code | Controls execution order and turn loop |
+| State Manager | Code | Applies structured updates to JSON state files |
 
-### Critical security property
+### Campaign state on disk
 
-The narrator must never receive:
-- `arc_brief.md`
-- any `npc_hidden.md`
-- `campaign.json` resolution conditions
-- `campaign.json` revelation conditions
-- hidden location secrets
-- future encounter briefs
+Each campaign lives in its own directory under `campaigns/`:
 
-This repository's testing strategy includes dedicated structural and canary-based tests to enforce that boundary.
+```
+campaigns/
+├── active_id                  ← UUID of the currently active campaign
+├── index.json                 ← registry of all campaigns
+└── {campaign_uuid}/
+    ├── campaign.json          ← full arc: encounters, conditions, world state
+    ├── session.json           ← runtime session state
+    ├── intake.json            ← party + preferences
+    ├── arc_brief.md           ← planner-only: hidden arc summary
+    ├── world_primer.md        ← narrator-visible world context
+    ├── adventure_transcript.md
+    ├── save_brief.md          ← generated on save; consumed once on resume
+    ├── encounters/            ← encounter briefs + summaries
+    ├── locations/             ← location state + narrator cards
+    ├── npcs/                  ← NPC state + narrator cards + hidden files
+    └── players/               ← player state + narrator cards
+```
 
-## Planned Project Structure
+The `campaigns/` directory is gitignored. Multiple campaigns can coexist on disk simultaneously.
 
-Once implementation begins, the runtime project is expected to follow this layout:
+### Project structure
 
-```text
+```
 .
-├── index.js
-├── stateManager.js
-├── fileUtils.js
+├── server.js           ← Express HTTP server + route handlers
+├── index.js            ← Orchestrator: setupCampaign, processTurn, handleEncounterTransition
+├── stateManager.js     ← Applies structured state updates to disk
+├── fileUtils.js        ← readJSON, writeJSON, writeFile, appendToFile
 ├── agents/
 │   ├── intake.js
 │   ├── planner.js
@@ -135,7 +132,8 @@ Once implementation begins, the runtime project is expected to follow this layou
 │   ├── narrator.js
 │   └── summarizer.js
 ├── prompts/
-│   ├── intake_system.txt
+│   ├── intake_review_system.txt
+│   ├── intake_finalize_system.txt
 │   ├── planner_system.txt
 │   ├── planner_revelation.txt
 │   ├── planner_reconciliation.txt
@@ -143,149 +141,80 @@ Once implementation begins, the runtime project is expected to follow this layou
 │   ├── resolver_system.txt
 │   ├── narrator_system.txt
 │   └── summarizer_system.txt
-├── campaign/
-│   ├── campaign.json
-│   ├── intake.json
-│   ├── session.json
-│   ├── resolver_result.json
-│   ├── arc_brief.md
-│   ├── world_primer.md
-│   ├── encounters/
-│   ├── locations/
-│   ├── npcs/
-│   └── players/
-└── tests/
+├── public/
+│   └── index.html      ← Browser UI (vanilla JS, no build step)
+└── docs/               ← Architecture, schemas, agent specs, design decisions
 ```
 
-## Documentation Map
+---
 
-If you are reading this repo for the first time, use this order:
+## HTTP API
 
-1. [CLAUDE.md](CLAUDE.md) — project entrypoint and design summary
-2. [docs/00-pre-build-checklist.md](docs/00-pre-build-checklist.md) — current documentation coverage and remaining gaps
-3. [docs/01-architecture.md](docs/01-architecture.md) — component boundaries and context tiers
-4. [docs/02-file-structure.md](docs/02-file-structure.md) — file layout and access matrix
-5. [docs/03-data-schemas.md](docs/03-data-schemas.md) — JSON contracts
-6. [docs/04-markdown-templates.md](docs/04-markdown-templates.md) — markdown file templates
-7. [docs/05-agents.md](docs/05-agents.md) — agent roles, system prompts, constraints, and I/O contracts
-8. [docs/06-orchestrator.md](docs/06-orchestrator.md) — deterministic control flow and state updates
-9. [docs/07-llm-call-inventory.md](docs/07-llm-call-inventory.md) — every LLM call, its inputs, outputs, and cost profile
-10. [docs/08-information-flow.md](docs/08-information-flow.md) — end-to-end flow diagrams
-11. [docs/09-design-decisions.md](docs/09-design-decisions.md) — rationale and rejected alternatives
-12. [docs/10-post-mvp-enhancements.md](docs/10-post-mvp-enhancements.md) — deferred features list
-13. [docs/11-wbs.md](docs/11-wbs.md) — phased build plan
-14. [docs/12-testing-strategy.md](docs/12-testing-strategy.md) — per-phase verification and test suites
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/status` | Current campaign phase and session info |
+| `GET` | `/campaigns` | List of all saved campaigns |
+| `POST` | `/intake` | Step 1: `{ party, preferences }` → character review; Step 2: `{ additional }` or `{ skip: true }` → write `intake.json` |
+| `POST` | `/setup` | Generate campaign from `intake.json`, open first scene |
+| `POST` | `/turn` | `{ input }` → resolve player action, return narration |
+| `POST` | `/scene` | Open next scene (or deliver epilogue if campaign complete) |
+| `POST` | `/save` | `{ name?, quit? }` → save campaign state |
+| `POST` | `/reset` | Abandon current campaign, return to home |
+| `POST` | `/campaigns/:id/load` | Switch active campaign |
+| `GET` | `/adventure/summary` | Download encounter summaries as markdown |
+| `GET` | `/adventure/transcript` | Download full narration transcript |
 
-## Build Plan Summary
+---
 
-Implementation is intentionally staged so the turn loop is runnable early, before all real model calls exist.
+## Configuration
 
-| Phase | Goal |
+| Variable | Default | Description |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | — | Required |
+| `PORT` | `3000` | HTTP server port |
+| `NARRATOR_MODEL` | `claude-sonnet-4-6` | Model for the Narrator agent |
+| `INTAKE_MODEL` | `claude-sonnet-4-6` | Model for the Intake agent |
+
+Other agents use the default Anthropic SDK model unless you add equivalent env overrides in their respective files.
+
+---
+
+## Design Principles
+
+1. **Two cognitive layers** — the Planning layer holds all secrets; the Narration layer only sees released information. This is a hard architectural boundary, not a prompt instruction.
+
+2. **Need-to-know file access** — each agent reads only the files required for its specific job. The narrator never loads the whole campaign.
+
+3. **Pure-code orchestration** — routing, sequencing, and state mutation are deterministic code. Agents handle language tasks; code handles control flow.
+
+4. **JSON for code, markdown for LLMs** — structured state that code queries lives in JSON. Prose that LLMs read lives in markdown.
+
+5. **Tiered context loading** — no agent ever loads the full campaign. Each call receives the smallest relevant context slice for that specific operation.
+
+---
+
+## Documentation
+
+The `docs/` directory contains the full architecture and design specification:
+
+| Document | Contents |
 |---|---|
-| 0 | Scaffold project, dependencies, and file utilities |
-| 1 | Build orchestrator skeleton with agent stubs |
-| 2 | Implement and test state manager |
-| 3 | Implement resolver as the first real agent |
-| 4 | Implement planner and all planner call modes |
-| 5 | Implement narrator with strict context loading |
-| 6 | Implement summarizer |
-| 7 | Implement intake |
-| 8 | Replace stubs, integrate, and add failure handling |
-| 9 | Run full end-to-end validation |
+| `docs/01-architecture.md` | Component boundaries, cognitive layers, context tiers |
+| `docs/02-file-structure.md` | File layout and access matrix |
+| `docs/03-data-schemas.md` | JSON schemas for all structured files |
+| `docs/04-markdown-templates.md` | Templates for all markdown files |
+| `docs/05-agents.md` | Agent roles, system prompt guidance, I/O contracts |
+| `docs/06-orchestrator.md` | Deterministic control flow and turn loop |
+| `docs/07-llm-call-inventory.md` | Every LLM call with inputs, outputs, and cost profile |
+| `docs/08-information-flow.md` | End-to-end flow diagrams |
+| `docs/09-design-decisions.md` | Rationale and rejected alternatives |
 
-The key strategy is to stub agents first so routing and state mutation can be validated before real LLM behavior is introduced.
-
-## Testing Strategy Summary
-
-The test plan mirrors the build plan and focuses on the highest-risk failure modes.
-
-### 1. Pure-code correctness
-- unit tests for file utilities and state manager
-- routing tests for orchestrator step order and branching
-- explicit verification that attitude changes are applied before narrator execution
-
-### 2. LLM contract validation
-- schema checks for resolver and planner structured outputs
-- context assembly checks for narrator inputs
-- summary quality and boundedness checks for summarizer
-
-### 3. Information separation
-- static file-access tests to ensure forbidden files are never loaded into narrator context
-- canary-string tests that detect hidden file leakage in narrator output
-- explicit leak checks ensuring encounter briefs do not contain resolution or revelation metadata
-
-### 4. End-to-end behavior
-- full multi-turn campaign runs with real model calls
-- transition tests across encounter boundaries
-- prompt injection baseline tests against player input
-
-## MVP Scope
-
-The current MVP is designed as:
-- a Node.js orchestrator
-- Anthropic Claude API integration or a compatible LLM provider
-- file-system-based campaign state using JSON and markdown on disk
-- single-session execution without persistent resume support
-
-The MVP is not currently designed as:
-- a public API product
-- a multi-tenant hosted platform
-- a full battle-engine simulation
-- a voice-first experience
-- a persistent campaign management platform
-
-## Post-MVP Enhancements
-
-Deferred features already identified for later phases:
-- session persistence
-- voice recognition for player input
-- voice narration output
-- structured battle engine
-- image generation for scene support
-- adaptive soundscape generation
-
-See [docs/10-post-mvp-enhancements.md](docs/10-post-mvp-enhancements.md) for details and rationale.
-
-## Expected Tech Stack
-
-Planned implementation stack:
-- Node.js for orchestration
-- Anthropic Claude API for LLM calls
-- Local file system for state storage in MVP
-- Jest for test automation
-- dotenv for local configuration
-
-## Repository Use
-
-This repository is best understood as the authoritative product and engineering spec for the project. It is intended to support:
-- implementation planning
-- architecture review
-- agent prompt design
-- correctness review for information boundaries
-- phased development and testing
-
-If you are starting implementation, begin with [docs/11-wbs.md](docs/11-wbs.md) and keep [docs/12-testing-strategy.md](docs/12-testing-strategy.md) open alongside it.
-
-## Open Gaps Still Tracked
-
-The pre-build checklist still identifies several documents that may be worth adding before or during implementation, including:
-- PRD / explicit acceptance criteria
-- non-functional requirements
-- infrastructure diagram
-- authentication / authorization design
-- wireframes or UI mockups
-- roadmap / milestone plan
-- threat model
-
-See [docs/00-pre-build-checklist.md](docs/00-pre-build-checklist.md) for the current status.
+---
 
 ## License
+This project is dual-licensed: free to use under the
+[AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.html) for open source use, and available
+under a commercial license for proprietary or closed-source projects — contact
+Istvan Fulop at ifulop@gmail.com for commercial licensing inquiries.
 
-This work includes material from the System Reference Document 5.2.1 (“SRD 5.2.1”) by Wizards of the Coast LLC, available at https://www.dndbeyond.com/srd. The SRD 5.2.1 is licensed under the Creative Commons Attribution 4.0 International License, available at https://creativecommons.org/licenses/by/4.0/ legalcode.
-
-## Contributing
-
-There is no formal contribution workflow in the repository yet. If development starts in this repo, the next practical setup steps are:
-1. scaffold the Node.js project from the WBS
-2. add the test harness from the testing strategy
-3. implement the orchestrator skeleton and stubs first
+This work includes material from the System Reference Document 5.2.1 ("SRD 5.2.1") by Wizards of the Coast LLC, available at https://www.dndbeyond.com/srd. The SRD 5.2.1 is licensed under the Creative Commons Attribution 4.0 International License, available at https://creativecommons.org/licenses/by/4.0/legalcode.

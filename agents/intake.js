@@ -1,18 +1,23 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { readFile } from '../fileUtils.js';
-import { createInterface } from 'readline';
 import { fileURLToPath } from 'url';
 import { resolve, dirname } from 'path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const SYSTEM_PROMPT_PATH = resolve(__dirname, '../prompts/intake_system.txt');
+const PROMPTS_DIR = resolve(__dirname, '../prompts');
 const MODEL = process.env.INTAKE_MODEL ?? 'claude-sonnet-4-6';
-const DEFAULT_MAX_TURNS = 20;
 
-let _systemPrompt = null;
-function systemPrompt() {
-  _systemPrompt ??= readFile(SYSTEM_PROMPT_PATH);
-  return _systemPrompt;
+let _reviewPrompt = null;
+let _finalizePrompt = null;
+
+function reviewPrompt() {
+  _reviewPrompt ??= readFile(`${PROMPTS_DIR}/intake_review_system.txt`);
+  return _reviewPrompt;
+}
+
+function finalizePrompt() {
+  _finalizePrompt ??= readFile(`${PROMPTS_DIR}/intake_finalize_system.txt`);
+  return _finalizePrompt;
 }
 
 // ── retry ─────────────────────────────────────────────────────────────────────
@@ -39,12 +44,10 @@ async function withRetry(fn, maxAttempts = 3) {
 // ── JSON extraction ───────────────────────────────────────────────────────────
 
 function tryExtractJSON(text) {
-  // try ```json or ``` fence first
   const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
   if (fenceMatch) {
     try { return JSON.parse(fenceMatch[1].trim()); } catch { /* fall through */ }
   }
-  // try to find a bare JSON object
   const objMatch = text.match(/\{[\s\S]*\}/);
   if (objMatch) {
     try { return JSON.parse(objMatch[0]); } catch { /* fall through */ }
@@ -57,7 +60,7 @@ function tryExtractJSON(text) {
 const PARTY_FIELDS = ['name', 'class', 'personality', 'backstory_hook', 'playstyle_notes'];
 const PREFS_FIELDS = ['tone', 'primary_goal', 'time_available', 'combat_ratio', 'problem_solving_preference', 'content_limits'];
 
-function validate(data) {
+export function validate(data) {
   if (!Array.isArray(data.party) || data.party.length === 0) {
     throw new Error('Intake: "party" must be a non-empty array');
   }
@@ -78,64 +81,40 @@ function validate(data) {
   return data;
 }
 
-// ── default I/O ───────────────────────────────────────────────────────────────
+// ── LLM call ──────────────────────────────────────────────────────────────────
 
-function createStdinInputFn() {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  return () => new Promise(resolve => rl.question('> ', answer => {
-    rl.close();
-    resolve(answer);
-  }));
-}
-
-// ── single-step export (HTTP use) ─────────────────────────────────────────────
-
-export async function step(messages) {
+async function callLLM(systemText, userMessage, maxTokens = 1024) {
   const client = new Anthropic();
   const response = await withRetry(() =>
     client.messages.create({
       model: MODEL,
-      max_tokens: 1024,
-      system: [{ type: 'text', text: systemPrompt(), cache_control: { type: 'ephemeral' } }],
-      messages,
+      max_tokens: maxTokens,
+      system: [{ type: 'text', text: systemText, cache_control: { type: 'ephemeral' } }],
+      messages: [{ role: 'user', content: userMessage }],
     })
   );
-  const text = response.content[0].text;
-  const parsed = tryExtractJSON(text);
-  if (parsed) return { done: true, intake: validate(parsed) };
-  return { done: false, text };
+  return response.content[0].text;
 }
 
-// ── main export ───────────────────────────────────────────────────────────────
+// ── exports ───────────────────────────────────────────────────────────────────
 
-export async function run(inputFn, { outputFn, maxTurns } = {}) {
-  const input = inputFn ?? createStdinInputFn();
-  const output = outputFn ?? (text => process.stdout.write(text + '\n'));
-  const MAX = maxTurns ?? DEFAULT_MAX_TURNS;
+// Step 1: receive structured form data, return narrative character summary
+export async function review(formData) {
+  const userMessage = `Here is the party's information:\n\n${JSON.stringify(formData, null, 2)}`;
+  return callLLM(reviewPrompt(), userMessage);
+}
 
-  const messages = [{ role: 'user', content: 'Start the session.' }];
-  const client = new Anthropic();
-
-  for (let turn = 0; turn < MAX; turn++) {
-    const response = await withRetry(() =>
-      client.messages.create({
-        model: MODEL,
-        max_tokens: 1024,
-        system: [{ type: 'text', text: systemPrompt(), cache_control: { type: 'ephemeral' } }],
-        messages,
-      })
-    );
-
-    const text = response.content[0].text;
-
-    const parsed = tryExtractJSON(text);
-    if (parsed) return validate(parsed);
-
-    output(text);
-    const playerInput = await input();
-    messages.push({ role: 'assistant', content: text });
-    messages.push({ role: 'user', content: playerInput });
-  }
-
-  throw new Error(`Intake: max turns (${MAX}) exceeded without producing intake data`);
+// Step 2: merge additional details into form data, return validated intake object
+export async function finalize(formData, additionalDetails) {
+  const userMessage = [
+    'FORM DATA:',
+    JSON.stringify(formData, null, 2),
+    '',
+    'ADDITIONAL DETAILS:',
+    additionalDetails,
+  ].join('\n');
+  const text = await callLLM(finalizePrompt(), userMessage);
+  const parsed = tryExtractJSON(text);
+  if (!parsed) throw new Error('Intake finalize: LLM did not return valid JSON');
+  return validate(parsed);
 }
