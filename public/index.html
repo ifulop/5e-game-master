@@ -593,7 +593,19 @@
 
   // ── Welcome-back screen ───────────────────────────────────────────────────────
 
-  function showWelcomeBack(status) {
+  function stripMarkdown(text) {
+    return text
+      .replace(/^#{1,3} /gm, '')
+      .replace(/\*\*(.*?)\*\*/g, '$1')
+      .trim();
+  }
+
+  function extractWhereWeLeftOff(text) {
+    const match = text.match(/## Where We Left Off\n\n([\s\S]*?)(?:\n## |\s*$)/);
+    return match ? match[1].trim() : null;
+  }
+
+  function showWelcomeBack(status, resumeContext) {
     setPhase('welcome_back');
     phaseBadge.textContent = status.phase.replace(/_/g, ' ');
 
@@ -627,6 +639,10 @@
 
     const continueBtn = btn_('Continue', () => {
       card.remove();
+      if (resumeContext) {
+        const excerpt = extractWhereWeLeftOff(resumeContext);
+        if (excerpt) addMsg(excerpt, 'narrator');
+      }
       setPhase(status.phase);
       renderActions(status);
     });
@@ -719,7 +735,7 @@
         if (activeChip) activeChip.classList.remove('active');
         customChip.classList.add('active');
         activeChip = customChip;
-        textInput.dataset.selectedValue = '';
+        textInput.dataset.selectedValue = textInput.value;
         textInput.classList.add('visible');
         textInput.focus();
       };
@@ -853,7 +869,7 @@
       { key: 'time_available', label: 'Session Length' },
       { key: 'combat_style', label: 'Combat Style' },
       { key: 'problem_solving', label: 'Problem-Solving Style' },
-      { key: 'content_limits', label: 'Content Limits' },
+      { key: 'content_limits', label: 'Content Limits (optional)' },
     ];
 
     const prefContainer = document.createElement('div');
@@ -1119,7 +1135,7 @@
       setPhase(data.phase);
 
       if (status.saved_at) {
-        showWelcomeBack(status);
+        showWelcomeBack(status, data.resume_context ?? null);
       } else {
         addMsg(`Resumed campaign. ${data.phase === 'in_progress' ? 'Enter your action below.' : 'Open the scene when ready.'}`, 'system');
         renderActions(status);
@@ -1179,7 +1195,7 @@
 
       // If there's a saved_at, show welcome-back screen instead of jumping straight in
       if (status.saved_at) {
-        showWelcomeBack(status);
+        showWelcomeBack(status, status.resume_context ?? null);
         return;
       }
 

@@ -1,36 +1,50 @@
 import 'dotenv/config';
 import express from 'express';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'fs';
+import cookieParser from 'cookie-parser';
+import { existsSync, mkdirSync, rmSync } from 'fs';
+import { basename, resolve } from 'path';
 import { randomUUID } from 'crypto';
 import { readJSON, writeJSON, readFile, writeFile, appendToFile } from './fileUtils.js';
+import { campaignStorage, campaignDir } from './lib/campaignContext.js';
 import * as intake from './agents/intake.js';
 import * as narrator from './agents/narrator.js';
 import { setupCampaign, processTurn } from './index.js';
 
 const app = express();
-app.use(express.json());
-app.use(express.static('public'));
 
-const CAMPAIGNS_ROOT = 'campaigns';
-const ACTIVE_ID_PATH = `${CAMPAIGNS_ROOT}/active_id`;
+const CAMPAIGNS_ROOT = process.env.CAMPAIGNS_DIR ?? 'campaigns';
 const INDEX_PATH = `${CAMPAIGNS_ROOT}/index.json`;
+const SESSIONS_PATH = `${CAMPAIGNS_ROOT}/sessions.json`;
 
-// ── Campaign registry helpers ─────────────────────────────────────────────────
+// ── Per-session active campaign map ──────────────────────────────────────────
+// Each browser session (UUID cookie) maps to an active campaign ID.
+// Persisted to sessions.json so the server can resume after restart.
 
-function getActiveCampaignDir() {
-  if (!existsSync(ACTIVE_ID_PATH)) return null;
-  const id = readFileSync(ACTIVE_ID_PATH, 'utf8').trim();
+if (!existsSync(CAMPAIGNS_ROOT)) mkdirSync(CAMPAIGNS_ROOT, { recursive: true });
+const activeSessions = existsSync(SESSIONS_PATH)
+  ? new Map(Object.entries(readJSON(SESSIONS_PATH)))
+  : new Map();
+
+function saveSessionMap() {
+  writeJSON(SESSIONS_PATH, Object.fromEntries(activeSessions));
+}
+
+function getSessionDir(sessionId) {
+  const id = activeSessions.get(sessionId);
   return id ? `${CAMPAIGNS_ROOT}/${id}` : null;
 }
 
-function setActiveCampaignId(id) {
-  if (!existsSync(CAMPAIGNS_ROOT)) mkdirSync(CAMPAIGNS_ROOT, { recursive: true });
-  writeFileSync(ACTIVE_ID_PATH, id ?? '', 'utf8');
+function setSessionCampaign(sessionId, campaignId) {
+  activeSessions.set(sessionId, campaignId);
+  saveSessionMap();
 }
 
-function clearActiveCampaign() {
-  writeFileSync(ACTIVE_ID_PATH, '', 'utf8');
+function clearSessionCampaign(sessionId) {
+  activeSessions.delete(sessionId);
+  saveSessionMap();
 }
+
+// ── Campaign registry helpers ─────────────────────────────────────────────────
 
 function loadIndex() {
   return existsSync(INDEX_PATH) ? readJSON(INDEX_PATH) : [];
@@ -73,8 +87,23 @@ function buildSaveBrief(dir, session, campaign) {
     .join('\n');
 
   const transcriptPath = `${dir}/adventure_transcript.md`;
-  const recentNarration = existsSync(transcriptPath)
-    ? readFile(transcriptPath).slice(-600) : '';
+  const recentNarration = (() => {
+    if (!existsSync(transcriptPath)) return '';
+    const chunks = readFile(transcriptPath).split('\n\n---\n\n').map(c => c.trim()).filter(Boolean);
+    if (!chunks.length) return '';
+    const last = chunks[chunks.length - 1];
+    if (last.startsWith('**Player:**')) {
+      const sep = last.indexOf('\n\n');
+      return sep >= 0 ? last.slice(sep + 2).trim() : last;
+    }
+    if (last.startsWith('#')) {
+      const lines = last.split('\n');
+      let i = 0;
+      while (i < lines.length && (lines[i].startsWith('#') || lines[i].trim() === '')) i++;
+      return lines.slice(i).join('\n').trim();
+    }
+    return last;
+  })();
 
   const lines = [
     `# Campaign Resume Brief`,
@@ -90,7 +119,7 @@ function buildSaveBrief(dir, session, campaign) {
   return lines.join('\n');
 }
 
-function performSave(dir, name, quit) {
+function performSave(dir, name, quit, sessionId = null) {
   const sessionPath = `${dir}/session.json`;
   const campaignPath = `${dir}/campaign.json`;
   if (!existsSync(sessionPath) || !existsSync(campaignPath)) return null;
@@ -109,7 +138,7 @@ function performSave(dir, name, quit) {
 
   const enc = campaign.encounters[session.current_encounter_index];
   upsertIndexEntry({
-    id: session.campaign_id,
+    id: basename(dir),
     name: saveName,
     created_at: session.created_at ?? savedAt,
     saved_at: savedAt,
@@ -123,21 +152,61 @@ function performSave(dir, name, quit) {
     encounter_title: enc?.title ?? null,
   });
 
-  if (quit) clearActiveCampaign();
+  if (quit && sessionId) clearSessionCampaign(sessionId);
   return { saved: true, name: saveName, saved_at: savedAt };
 }
 
-// ── Middleware: resolve active campaign dir per request ───────────────────────
+// ── Middleware ────────────────────────────────────────────────────────────────
 
+app.use(express.json());
+app.use(cookieParser());
+
+// Assign a persistent session ID cookie on first visit
 app.use((req, res, next) => {
-  const dir = getActiveCampaignDir();
-  if (dir) process.env.CAMPAIGN_DIR = dir;
+  if (!req.cookies.dm_session) {
+    const id = randomUUID();
+    res.cookie('dm_session', id, { httpOnly: true, sameSite: 'lax', maxAge: 90 * 24 * 60 * 60 * 1000 });
+    req.cookies.dm_session = id; // make available within this request
+  }
   next();
 });
 
-// ── helpers that use the active campaign dir ──────────────────────────────────
+// Optional access-code authentication — set ACCESS_CODE env var to enable
+const ACCESS_CODE = process.env.ACCESS_CODE ?? null;
+app.use((req, res, next) => {
+  if (!ACCESS_CODE) return next();
+  if (req.cookies.dm_auth === ACCESS_CODE) return next();
+  if (req.path === '/login') return next();
+  // API calls get JSON 401; browser navigations get the login page
+  if (req.accepts('html') && !req.path.startsWith('/login')) {
+    return res.sendFile(resolve('public/login.html'));
+  }
+  return res.status(401).json({ error: 'unauthorized', message: 'Access code required.' });
+});
 
-function campaignDir() { return process.env.CAMPAIGN_DIR ?? `${CAMPAIGNS_ROOT}/default`; }
+// Serve static files after auth so unauthenticated visitors see the login page
+app.use(express.static('public'));
+
+// Run each request inside its session's campaign dir context using AsyncLocalStorage.
+// This makes campaignDir() concurrency-safe: each async call chain sees its own dir.
+app.use((req, res, next) => {
+  const dir = getSessionDir(req.cookies.dm_session);
+  campaignStorage.run(dir, next);
+});
+
+// ── POST /login ───────────────────────────────────────────────────────────────
+
+app.post('/login', express.urlencoded({ extended: false }), (req, res) => {
+  if (!ACCESS_CODE || req.body.code === ACCESS_CODE) {
+    res.cookie('dm_auth', ACCESS_CODE ?? 'open', {
+      httpOnly: true, sameSite: 'lax', maxAge: 90 * 24 * 60 * 60 * 1000,
+    });
+    return res.redirect('/');
+  }
+  return res.status(401).sendFile(resolve('public/login.html'));
+});
+
+// ── Helpers that use the active campaign dir ──────────────────────────────────
 
 function logTranscript(text) {
   appendToFile(`${campaignDir()}/adventure_transcript.md`, text);
@@ -145,6 +214,8 @@ function logTranscript(text) {
 
 function getCurrentPhase() {
   const dir = campaignDir();
+  if (!dir) return 'no_campaign';
+
   const formPath = `${dir}/intake_form.json`;
   const intakePath = `${dir}/intake.json`;
   const sessionPath = `${dir}/session.json`;
@@ -162,25 +233,19 @@ function getCurrentPhase() {
 // ── GET /status ───────────────────────────────────────────────────────────────
 
 app.get('/status', (req, res) => {
-  const activeDir = getActiveCampaignDir();
-  if (!activeDir) {
-    return res.json({ phase: 'no_campaign' });
-  }
-
   const phase = getCurrentPhase();
 
-  if (phase === 'no_campaign') {
-    return res.json({ phase: 'no_campaign' });
-  }
+  if (phase === 'no_campaign') return res.json({ phase: 'no_campaign' });
+
+  const dir = campaignDir();
 
   if (phase === 'intake') {
-    const dir = campaignDir();
     const intakeStep = existsSync(`${dir}/intake_form.json`) ? 'review' : 'form';
     return res.json({ phase: 'intake', intakeStep });
   }
 
-  const session = readJSON(`${campaignDir()}/session.json`);
-  const campaignPath = `${campaignDir()}/campaign.json`;
+  const session = readJSON(`${dir}/session.json`);
+  const campaignPath = `${dir}/campaign.json`;
   const campaign = existsSync(campaignPath) ? readJSON(campaignPath) : null;
   const enc = campaign?.encounters[session.current_encounter_index];
 
@@ -190,12 +255,15 @@ app.get('/status', (req, res) => {
     turn_count: session.turn_count,
     save_name: session.save_name ?? null,
     saved_at: session.saved_at ?? null,
-    party: existsSync(`${campaignDir()}/intake.json`)
-      ? readJSON(`${campaignDir()}/intake.json`).party.map(p => `${p.name} (${p.class})`)
+    party: existsSync(`${dir}/intake.json`)
+      ? readJSON(`${dir}/intake.json`).party.map(p => `${p.name} (${p.class})`)
       : [],
     encounter_title: enc?.title ?? null,
     total_encounters: campaign?.encounters.length ?? null,
   };
+
+  const saveBriefPath = `${dir}/save_brief.md`;
+  if (existsSync(saveBriefPath)) base.resume_context = readFile(saveBriefPath);
 
   if (phase === 'complete') return res.json({ phase: 'complete', ...base });
 
@@ -209,7 +277,12 @@ app.get('/status', (req, res) => {
 // ── GET /campaigns ────────────────────────────────────────────────────────────
 
 app.get('/campaigns', (req, res) => {
-  const index = loadIndex().filter(e => e.status !== 'abandoned');
+  const sessionId = req.cookies.dm_session;
+  const index = loadIndex().filter(e =>
+    e.status !== 'abandoned' &&
+    e.status !== 'intake' &&
+    e.session_id === sessionId
+  );
   return res.json(index);
 });
 
@@ -217,21 +290,37 @@ app.get('/campaigns', (req, res) => {
 
 app.post('/campaigns/:id/load', (req, res) => {
   const { id } = req.params;
+  const sessionId = req.cookies.dm_session;
   const targetDir = `${CAMPAIGNS_ROOT}/${id}`;
+
   if (!existsSync(`${targetDir}/session.json`)) {
     return res.status(404).json({ error: 'not_found', message: `Campaign ${id} not found.` });
   }
 
+  // Verify ownership
+  const indexEntry = loadIndex().find(e => e.id === id);
+  if (indexEntry?.session_id && indexEntry.session_id !== sessionId) {
+    return res.status(403).json({ error: 'forbidden', message: 'Campaign belongs to another session.' });
+  }
+
   // Save current active campaign before switching (if any)
-  const currentDir = getActiveCampaignDir();
+  const currentDir = getSessionDir(sessionId);
   if (currentDir && currentDir !== targetDir) {
     performSave(currentDir, null, false);
   }
 
-  setActiveCampaignId(id);
-  process.env.CAMPAIGN_DIR = targetDir;
+  setSessionCampaign(sessionId, id);
 
   const session = readJSON(`${targetDir}/session.json`);
+  const saveBriefPath = `${targetDir}/save_brief.md`;
+  let resumeContext = null;
+  if (existsSync(saveBriefPath)) {
+    resumeContext = readFile(saveBriefPath);
+  } else if (existsSync(`${targetDir}/campaign.json`)) {
+    const campaign = readJSON(`${targetDir}/campaign.json`);
+    resumeContext = buildSaveBrief(targetDir, session, campaign);
+  }
+
   return res.json({
     loaded: true,
     campaign_id: id,
@@ -240,6 +329,7 @@ app.post('/campaigns/:id/load', (req, res) => {
       : 'in_progress',
     save_name: session.save_name ?? null,
     turn_count: session.turn_count,
+    resume_context: resumeContext,
   });
 });
 
@@ -247,19 +337,19 @@ app.post('/campaigns/:id/load', (req, res) => {
 
 app.post('/intake', async (req, res) => {
   const body = req.body ?? {};
+  const sessionId = req.cookies.dm_session;
 
   // ── Step 1: form submit { party, preferences } ────────────────────────────
   if (body.party) {
-    // Create campaign dir if needed
-    let dir = getActiveCampaignDir();
+    let dir = getSessionDir(sessionId);
     if (!dir) {
       const newId = randomUUID();
       dir = `${CAMPAIGNS_ROOT}/${newId}`;
       mkdirSync(dir, { recursive: true });
-      setActiveCampaignId(newId);
-      process.env.CAMPAIGN_DIR = dir;
+      setSessionCampaign(sessionId, newId);
       upsertIndexEntry({
         id: newId,
+        session_id: sessionId,
         name: 'New Campaign',
         created_at: new Date().toISOString(),
         saved_at: null,
@@ -299,6 +389,7 @@ app.post('/intake', async (req, res) => {
   // ── Step 2a: add details { additional } ──────────────────────────────────
   if (body.additional) {
     const dir = campaignDir();
+    if (!dir) return res.status(400).json({ error: 'wrong_phase', message: 'No intake in progress.' });
     const formPath = `${dir}/intake_form.json`;
     if (!existsSync(formPath)) {
       return res.status(400).json({ error: 'wrong_phase', message: 'No intake form in progress.' });
@@ -320,6 +411,7 @@ app.post('/intake', async (req, res) => {
   // ── Step 2b: skip { skip: true } ─────────────────────────────────────────
   if (body.skip) {
     const dir = campaignDir();
+    if (!dir) return res.status(400).json({ error: 'wrong_phase', message: 'No intake in progress.' });
     const formPath = `${dir}/intake_form.json`;
     if (!existsSync(formPath)) {
       return res.status(400).json({ error: 'wrong_phase', message: 'No intake form in progress.' });
@@ -342,6 +434,8 @@ app.post('/intake', async (req, res) => {
 
 app.post('/setup', async (req, res) => {
   const dir = campaignDir();
+  if (!dir) return res.status(400).json({ error: 'no_campaign', message: 'No active campaign.' });
+
   const intakePath = `${dir}/intake.json`;
   if (!existsSync(intakePath)) {
     return res.status(400).json({
@@ -363,11 +457,11 @@ app.post('/setup', async (req, res) => {
     const convPath = `${dir}/intake_conversation.json`;
     if (existsSync(convPath)) rmSync(convPath);
 
-    // Update registry with party and encounter info
     const session = readJSON(`${dir}/session.json`);
     const campaign = readJSON(`${dir}/campaign.json`);
     upsertIndexEntry({
-      id: session.campaign_id,
+      id: basename(dir),
+      session_id: req.cookies.dm_session,
       name: session.save_name ?? campaign.meta?.title ?? 'Campaign',
       status: session.encounter_status,
       encounter: session.current_encounter_id,
@@ -390,13 +484,13 @@ app.post('/setup', async (req, res) => {
 
 app.post('/save', (req, res) => {
   const dir = campaignDir();
-  if (!existsSync(`${dir}/session.json`)) {
+  if (!dir || !existsSync(`${dir}/session.json`)) {
     return res.status(400).json({ error: 'no_campaign', message: 'No active campaign to save.' });
   }
 
   const { name, quit } = req.body ?? {};
   try {
-    const result = performSave(dir, name ?? null, !!quit);
+    const result = performSave(dir, name ?? null, !!quit, req.cookies.dm_session);
     if (!result) {
       return res.status(500).json({ error: 'save_failed', message: 'Could not write save.' });
     }
@@ -411,6 +505,8 @@ app.post('/save', (req, res) => {
 
 app.post('/turn', async (req, res) => {
   const dir = campaignDir();
+  if (!dir) return res.status(400).json({ error: 'wrong_phase', message: 'No active campaign.' });
+
   const sessionPath = `${dir}/session.json`;
   if (!existsSync(sessionPath)) {
     return res.status(400).json({ error: 'wrong_phase', message: 'No active campaign. Start with POST /intake.' });
@@ -436,10 +532,9 @@ app.post('/turn', async (req, res) => {
       return res.json({ narration: result });
     }
 
-    // When campaign completes, auto-save
     if (result.campaign_complete) {
       performSave(dir, null, false);
-      upsertIndexEntry({ id: session.campaign_id, status: 'complete' });
+      upsertIndexEntry({ id: basename(dir), status: 'complete' });
     }
 
     return res.json({
@@ -460,6 +555,8 @@ app.post('/turn', async (req, res) => {
 
 app.post('/scene', async (req, res) => {
   const dir = campaignDir();
+  if (!dir) return res.status(400).json({ error: 'wrong_phase', message: 'No active campaign.' });
+
   const sessionPath = `${dir}/session.json`;
   if (!existsSync(sessionPath)) {
     return res.status(400).json({ error: 'wrong_phase', message: 'No active campaign.' });
@@ -489,8 +586,9 @@ app.post('/scene', async (req, res) => {
 
   try {
     const narration = await narrator.openScene();
-    session.encounter_status = 'in_progress';
-    writeJSON(sessionPath, session);
+    const freshSession = readJSON(sessionPath);
+    freshSession.encounter_status = 'in_progress';
+    writeJSON(sessionPath, freshSession);
     logTranscript(`## New Scene\n\n${narration}\n\n---\n\n`);
     return res.json({ narration });
   } catch (err) {
@@ -505,7 +603,7 @@ app.post('/scene', async (req, res) => {
 
 app.get('/adventure/summary', (req, res) => {
   const dir = campaignDir();
-  if (!existsSync(`${dir}/session.json`)) {
+  if (!dir || !existsSync(`${dir}/session.json`)) {
     return res.status(400).json({ error: 'no_campaign', message: 'No campaign in progress.' });
   }
 
@@ -514,15 +612,11 @@ app.get('/adventure/summary', (req, res) => {
   const sections = ['# Adventure Log\n'];
 
   const worldPrimerPath = `${dir}/world_primer.md`;
-  if (existsSync(worldPrimerPath)) {
-    sections.push(`## World\n\n${readFile(worldPrimerPath)}\n`);
-  }
+  if (existsSync(worldPrimerPath)) sections.push(`## World\n\n${readFile(worldPrimerPath)}\n`);
 
   for (const encId of encounterIds) {
     const summaryPath = `${dir}/encounters/${encId}_summary.md`;
-    if (existsSync(summaryPath)) {
-      sections.push(`## ${encId}\n\n${readFile(summaryPath)}\n`);
-    }
+    if (existsSync(summaryPath)) sections.push(`## ${encId}\n\n${readFile(summaryPath)}\n`);
   }
 
   res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
@@ -533,7 +627,9 @@ app.get('/adventure/summary', (req, res) => {
 // ── GET /adventure/transcript ─────────────────────────────────────────────────
 
 app.get('/adventure/transcript', (req, res) => {
-  const transcriptPath = `${campaignDir()}/adventure_transcript.md`;
+  const dir = campaignDir();
+  if (!dir) return res.status(400).json({ error: 'no_campaign', message: 'No campaign in progress.' });
+  const transcriptPath = `${dir}/adventure_transcript.md`;
   if (!existsSync(transcriptPath)) {
     return res.status(404).json({ error: 'not_found', message: 'No transcript available yet.' });
   }
@@ -545,23 +641,22 @@ app.get('/adventure/transcript', (req, res) => {
 // ── POST /reset ───────────────────────────────────────────────────────────────
 
 app.post('/reset', (req, res) => {
-  const dir = getActiveCampaignDir();
+  const sessionId = req.cookies.dm_session;
+  const dir = getSessionDir(sessionId);
   if (!dir) {
     return res.status(400).json({ error: 'no_campaign', message: 'No active campaign to reset.' });
   }
 
   const sessionPath = `${dir}/session.json`;
   if (existsSync(sessionPath)) {
-    const session = readJSON(sessionPath);
-    upsertIndexEntry({ id: session.campaign_id, status: 'abandoned' });
+    upsertIndexEntry({ id: basename(dir), status: 'abandoned' });
   }
 
-  clearActiveCampaign();
-  process.env.CAMPAIGN_DIR = '';
+  clearSessionCampaign(sessionId);
   return res.json({ message: 'Campaign abandoned. Send POST /intake to begin a new one.' });
 });
 
-// ── Global error handler — ensures all uncaught route errors return JSON ──────
+// ── Global error handler ──────────────────────────────────────────────────────
 
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, _next) => {

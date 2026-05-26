@@ -1,14 +1,13 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { existsSync, rmSync } from 'fs';
-import { readJSON, readFile } from '../fileUtils.js';
+import { readJSON, writeJSON, readFile } from '../fileUtils.js';
+import { campaignDir } from '../lib/campaignContext.js';
 import { fileURLToPath } from 'url';
 import { resolve, dirname } from 'path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROMPTS_DIR = resolve(__dirname, '../prompts');
 const MODEL = process.env.NARRATOR_MODEL ?? 'claude-sonnet-4-6';
-
-function campaignDir() { return process.env.CAMPAIGN_DIR ?? 'campaign'; }
 
 let _systemText = null;
 function systemText() {
@@ -106,15 +105,10 @@ function buildSystemMessages(worldPrimer, playerCards, dynamicContext) {
   return system;
 }
 
-async function callNarrator(system, userMessage, maxTokens = 1024) {
+async function callNarrator(system, messages, maxTokens = 1024) {
   const client = new Anthropic();
   const response = await withRetry(() =>
-    client.messages.create({
-      model: MODEL,
-      max_tokens: maxTokens,
-      system,
-      messages: [{ role: 'user', content: userMessage }],
-    })
+    client.messages.create({ model: MODEL, max_tokens: maxTokens, system, messages })
   );
   return response.content[0].text;
 }
@@ -144,8 +138,12 @@ export async function openScene() {
 
   const narration = await callNarrator(
     buildSystemMessages(worldPrimer, playerCards, parts.join('\n\n')),
-    'Open the scene.'
+    [{ role: 'user', content: 'Open the scene.' }]
   );
+
+  // Seed narrator_outputs so continueTurn can build a multi-turn conversation
+  session.narrator_outputs = [narration];
+  writeJSON(`${dir}/session.json`, session);
 
   // Delete save_brief.md after first use so it doesn't pollute future scene opens
   if (saveBrief && existsSync(saveBriefPath)) rmSync(saveBriefPath);
@@ -162,22 +160,39 @@ export async function continueTurn(playerInput) {
   const playerCards = loadPlayerCards(dir, playerIds);
   const { encBrief, npcCards, locationCard, prevSummary } = loadEncounterContext(dir, session);
 
-  // exclude the current input from history — it becomes the user message
-  const prevInputs = session.player_inputs.slice(0, -1);
-  const turnHistory = formatTurnHistory(prevInputs);
-
   const parts = [
     npcCards && `## NPC Cards\n\n${npcCards}`,
     locationCard && `## Location\n\n${locationCard}`,
     prevSummary && `## Previous Encounter Summary\n\n${prevSummary}`,
     `## Current Encounter Brief\n\n${encBrief}`,
-    `## Previous Turns This Encounter\n\n${turnHistory}`,
   ].filter(Boolean);
 
-  return callNarrator(
+  // Build multi-turn conversation so the narrator remembers what it already narrated.
+  // prevInputs excludes the current input (already pushed to session before this call).
+  const narratorOutputs = session.narrator_outputs ?? [];
+  const prevInputs = session.player_inputs.slice(0, -1);
+
+  // When narrator_outputs is empty (legacy session or edge case), send a plain single-turn
+  // call to avoid two consecutive user messages, which the API rejects.
+  const messages = narratorOutputs.length > 0
+    ? [
+        { role: 'user', content: 'Open the scene.' },
+        ...narratorOutputs.flatMap((n, i) => [
+          { role: 'assistant', content: n },
+          ...(prevInputs[i] != null ? [{ role: 'user', content: prevInputs[i] }] : []),
+        ]),
+        { role: 'user', content: playerInput },
+      ]
+    : [{ role: 'user', content: playerInput }];
+
+  const narration = await callNarrator(
     buildSystemMessages(worldPrimer, playerCards, parts.join('\n\n')),
-    playerInput
+    messages
   );
+
+  session.narrator_outputs = [...narratorOutputs, narration];
+  writeJSON(`${dir}/session.json`, session);
+  return narration;
 }
 
 export async function closeEncounter(resolverResult) {
@@ -200,7 +215,7 @@ export async function closeEncounter(resolverResult) {
 
   return callNarrator(
     buildSystemMessages(worldPrimer, playerCards, parts.join('\n\n')),
-    `Close the scene. The encounter resolved with outcome: ${resolutionType}.`
+    [{ role: 'user', content: `Close the scene. The encounter resolved with outcome: ${resolutionType}.` }]
   );
 }
 
@@ -224,7 +239,7 @@ export async function closeCampaign() {
 
   return callNarrator(
     buildSystemMessages(worldPrimer, playerCards, parts.join('\n\n')),
-    'Deliver the campaign epilogue.',
+    [{ role: 'user', content: 'Deliver the campaign epilogue.' }],
     2048
   );
 }

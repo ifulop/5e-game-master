@@ -6,8 +6,7 @@ import * as resolver from './agents/resolver.js';
 import * as narrator from './agents/narrator.js';
 import * as summarizer from './agents/summarizer.js';
 import { StateManager } from './stateManager.js';
-
-function campaignDir() { return process.env.CAMPAIGN_DIR ?? 'campaigns/default'; }
+import { campaignDir } from './lib/campaignContext.js';
 
 function logTranscript(text) {
   appendToFile(`${campaignDir()}/adventure_transcript.md`, text);
@@ -40,7 +39,8 @@ export async function setupCampaign(providedIntake = null) {
     encounter_ids: campaign.encounters.map(e => e.id),
     encounter_status: 'awaiting_scene_open',
     turn_count: 0,
-    player_inputs: []
+    player_inputs: [],
+    narrator_outputs: [],
   };
   writeJSON(`${dir}/session.json`, session);
 
@@ -49,8 +49,10 @@ export async function setupCampaign(providedIntake = null) {
   }
 
   const narration = await narrator.openScene();
-  session.encounter_status = 'in_progress';
-  writeJSON(`${dir}/session.json`, session);
+  // Re-read session to pick up narrator_outputs written by openScene
+  const freshSession = readJSON(`${dir}/session.json`);
+  freshSession.encounter_status = 'in_progress';
+  writeJSON(`${dir}/session.json`, freshSession);
 
   logTranscript(`# Adventure Transcript\n\n## Opening Scene\n\n${narration}\n\n---\n\n`);
   return narration;
@@ -201,6 +203,7 @@ export async function handleEncounterTransition(resolverResult) {
   session.encounter_status = 'awaiting_scene_open';
   session.turn_count = 0;
   session.player_inputs = [];
+  session.narrator_outputs = [];
   writeJSON(`${dir}/session.json`, session);
 }
 

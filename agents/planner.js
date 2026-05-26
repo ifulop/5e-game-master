@@ -1,14 +1,13 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { existsSync } from 'fs';
 import { readJSON, writeJSON, readFile, writeFile, appendToFile } from '../fileUtils.js';
+import { campaignDir } from '../lib/campaignContext.js';
 import { fileURLToPath } from 'url';
 import { resolve, dirname } from 'path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROMPTS_DIR = resolve(__dirname, '../prompts');
 const MODEL = process.env.PLANNER_MODEL ?? 'claude-sonnet-4-6';
-
-function campaignDir() { return process.env.CAMPAIGN_DIR ?? 'campaign'; }
 
 const _prompts = {};
 function systemPrompt(name) {
