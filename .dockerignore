@@ -1,0 +1,7 @@
+node_modules/
+.env
+campaigns/
+campaign/
+campaign-archive-*/
+docs/*.pdf
+tools/
