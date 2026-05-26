@@ -1,4 +1,4 @@
-app = 'dungeon-master'
+app = '5e-munchkin'
 primary_region = 'ord'
 
 [build]
