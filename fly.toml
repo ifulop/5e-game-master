@@ -1,9 +1,4 @@
-# fly.toml app configuration file generated for dungeon-master on 2026-05-26T00:50:26Z
-#
-# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
-#
-
-app = 'dungeon-master'
+app = '5e-munchkin'
 primary_region = 'ord'
 
 [build]
