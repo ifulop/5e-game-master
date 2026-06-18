@@ -6,6 +6,7 @@ primary_region = 'ord'
 [env]
   NODE_ENV = 'production'
   PORT = '3000'
+  CAMPAIGNS_DIR = '/data/campaigns'
 
 [[mounts]]
   source = 'campaigns_data'
