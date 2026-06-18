@@ -1,10 +1,5 @@
-# fly.toml app configuration file generated for 5e-game-master on 2026-06-17T21:07:41Z
-#
-# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
-#
-
-app = '5e-game-master'
-primary_region = 'sjc'
+app = '5e-munchkin'
+primary_region = 'ord'
 
 [build]
 
